@@ -117,18 +117,6 @@ function saveLastRead() {
   localStorage.setItem(LASTREAD_KEY, JSON.stringify(lastRead))
 }
 
-/** Run async work over items a few at a time — full parallel bursts trip
- *  transient 5xx errors on ClickUp's side. Failures are swallowed per item. */
-async function inBatches<T>(
-  items: readonly T[],
-  batchSize: number,
-  fn: (item: T) => Promise<unknown>,
-) {
-  for (let i = 0; i < items.length; i += batchSize) {
-    await Promise.allSettled(items.slice(i, i + batchSize).map(fn))
-  }
-}
-
 function totalUnread(): number {
   // Unknown-count channels (sentinel -1) count as one unread each.
   return Object.values(state.unread).reduce(
@@ -275,7 +263,7 @@ async function loadChannels() {
     state.channels = fresh.filter((c) => !c.archived)
     const unresolved = state.channels.filter((c) => c.type !== 'CHANNEL' && !dmNames[c.id])
     if (unresolved.length) {
-      await inBatches(unresolved, 4, resolveDmName)
+      await api.inBatches(unresolved, 4, resolveDmName)
       await writeCache(dmNamesKey(), dmNames)
     }
   } finally {
@@ -317,7 +305,7 @@ async function sweepUnread() {
   const byActivity = [...flagged].sort(
     (a, b) => (b.latest_comment_at ?? 0) - (a.latest_comment_at ?? 0),
   )
-  await inBatches(byActivity.slice(0, SWEEP_COUNT_CAP), 4, fetchUnreadCount)
+  await api.inBatches(byActivity.slice(0, SWEEP_COUNT_CAP), 4, fetchUnreadCount)
   for (const channel of byActivity.slice(SWEEP_COUNT_CAP)) {
     if (!state.unread[channel.id]) state.unread[channel.id] = UNREAD_UNKNOWN
   }
@@ -359,7 +347,7 @@ async function sweepPinned() {
       !isViewing(c.id) &&
       (c.latest_comment_at ?? 0) > lastRead[c.id],
   )
-  await inBatches(flagged, 4, fetchUnreadCount)
+  await api.inBatches(flagged, 4, fetchUnreadCount)
   refreshBadges()
   if (totalUnread() > before) beep()
 }
@@ -426,7 +414,7 @@ async function openBox(channelId: string) {
     if (box) box.loading = false
   }
   const recent = box?.messages.slice(-BOX_REACTION_COUNT) ?? []
-  inBatches(recent, 4, (m) => refreshReactionsFor(m.id)).catch(() => {})
+  api.inBatches(recent, 4, (m) => refreshReactionsFor(m.id)).catch(() => {})
 }
 
 function expandBox(box: ChatBox) {
@@ -451,7 +439,7 @@ async function autoOpenBoxes() {
       !state.boxes.some((b) => b.channelId === c.id)
     )
   })
-  await inBatches(candidates, 4, async (channel) => {
+  await api.inBatches(candidates, 4, async (channel) => {
     const messages = await api.getMessages(state.workspaceId, channel.id, SWEEP_FETCH_LIMIT)
     if (countUnread(channel.id, messages)) {
       await openBox(channel.id)
@@ -468,7 +456,7 @@ async function watchChannels() {
   await Promise.all([
     autoOpenBoxes(),
     state.dockActive
-      ? inBatches(state.boxes, 3, (b) => pollBox(b.channelId))
+      ? api.inBatches(state.boxes, 3, (b) => pollBox(b.channelId))
       : Promise.resolve(),
   ])
 }
@@ -533,7 +521,7 @@ async function refreshReactionsFor(messageId: string) {
 /** Refresh reactions for the newest messages in the open channel. */
 async function refreshRecentReactions() {
   const recent = state.messages.slice(-REACTION_REFRESH_COUNT)
-  await inBatches(recent, 4, (m) => refreshReactionsFor(m.id))
+  await api.inBatches(recent, 4, (m) => refreshReactionsFor(m.id))
 }
 
 /** Actually deliver a queued message to ClickUp. */
@@ -782,7 +770,7 @@ export function useChat() {
     state.dockActive = active
     if (!active) return
     // Boxes were off screen — catch them up.
-    inBatches(state.boxes, 3, (b) => pollBox(b.channelId)).catch(() => {})
+    api.inBatches(state.boxes, 3, (b) => pollBox(b.channelId)).catch(() => {})
   }
 
   function togglePin(channelId: string) {

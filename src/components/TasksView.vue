@@ -1,22 +1,40 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import {
+  createColumnHelper,
+  createExpandedRowModel,
+  createPaginatedRowModel,
+  createSortedRowModel,
+  FlexRender,
+  functionalUpdate,
+  rowExpandingFeature,
+  rowPaginationFeature,
+  rowSortingFeature,
+  sortFn_alphanumeric,
+  sortFn_basic,
+  sortFn_text,
+  tableFeatures,
+  useTable,
+  type PaginationState,
+  type SortingState,
+} from '@tanstack/vue-table'
+import {
   VibeAlert,
   VibeBadge,
   VibeButton,
-  VibeDataTable,
   VibeDropdown,
+  VibeFormSwitch,
   VibeIcon,
   VibeLink,
+  VibePagination,
   VibeSpinner,
-  type DataTableColumn,
   type DropdownItem,
   type Variant,
 } from '@velkymx/vibeui'
 import { useRoute, useRouter } from 'vue-router'
 import { PRIORITY_RANK, useMyTasks } from '../composables/useMyTasks'
 import { ageLabel } from '../lib/taskCache'
-import { isOverdue } from '../lib/workflow'
+import { isOpen, isOverdue } from '../lib/workflow'
 import type { TaskRow } from '../types'
 
 const router = useRouter()
@@ -47,16 +65,109 @@ onMounted(ensureLoaded)
 const formatDate = (ms: unknown) =>
   typeof ms === 'number' ? new Date(ms).toLocaleDateString() : '—'
 
-const columns: DataTableColumn<TaskRow>[] = [
-  { key: 'taskId', label: 'ID', class: 'text-nowrap' },
-  { key: 'name', label: 'Task' },
-  { key: 'status', label: 'Status' },
-  // Sorts by rank (urgent first); the cell slot shows the label.
-  { key: 'priorityRank', label: 'Priority', searchable: false },
-  { key: 'list', label: 'List' },
-  { key: 'due', label: 'Due', searchable: false, formatter: formatDate },
-  { key: 'updated', label: 'Updated', searchable: false, formatter: formatDate },
-]
+// ---------- Tree ----------
+// Subtasks nest under their parent. Parents that aren't assigned to me (or
+// that the filters hide) still show, dimmed, as the path to a match.
+
+/** Why a row is shown only as context; '' = it's one of my matching tasks. */
+type ContextReason = '' | 'unassigned' | 'filtered'
+
+type TreeRow = TaskRow & { subRows: TreeRow[]; context: ContextReason }
+
+const CONTEXT_TITLE: Record<ContextReason, string | undefined> = {
+  '': undefined,
+  unassigned: 'Parent task — not assigned to you',
+  filtered: "Parent task — doesn't match your filters",
+}
+
+const byId = computed(
+  () => new Map([...(tasks.ancestors as TaskRow[]), ...rows.value].map((r) => [r.id, r])),
+)
+
+/** Parent, grandparent, … as far up as we have them. */
+function ancestorsOf(row: TaskRow): TaskRow[] {
+  const chain: TaskRow[] = []
+  let parent = row.parentId ? byId.value.get(row.parentId) : undefined
+  while (parent && !chain.includes(parent)) {
+    chain.push(parent)
+    parent = parent.parentId ? byId.value.get(parent.parentId) : undefined
+  }
+  return chain
+}
+
+const search = ref('')
+
+/** A row matches on its own ID/name/status/list, or on a parent's ID or
+ *  name — so searching a parent lists its subtasks. */
+function matchesSearch(row: TaskRow): boolean {
+  const q = search.value.trim().toLowerCase()
+  if (!q) return true
+  const has = (text: string) => text.toLowerCase().includes(q)
+  return (
+    [row.taskId, row.name, row.status, row.list].some(has) ||
+    ancestorsOf(row).some((a) => has(a.taskId) || has(a.name))
+  )
+}
+
+const tree = computed<TreeRow[]>(() => {
+  const assigned = new Set(rows.value.map((r) => r.id))
+  const nodes = new Map<string, TreeRow>()
+  for (const row of filteredRows.value) nodes.set(row.id, { ...row, subRows: [], context: '' })
+  for (const row of filteredRows.value) {
+    for (const a of ancestorsOf(row)) {
+      if (!nodes.has(a.id)) {
+        nodes.set(a.id, { ...a, subRows: [], context: assigned.has(a.id) ? 'filtered' : 'unassigned' })
+      }
+    }
+  }
+  const roots: TreeRow[] = []
+  for (const node of nodes.values()) {
+    const parent = node.parentId ? nodes.get(node.parentId) : undefined
+    ;(parent ? parent.subRows : roots).push(node)
+  }
+  return roots
+})
+
+const parentIds = computed(() => {
+  const ids: string[] = []
+  const walk = (list: TreeRow[]) =>
+    list.forEach((n) => {
+      if (n.subRows.length) ids.push(n.id)
+      walk(n.subRows)
+    })
+  walk(tree.value)
+  return ids
+})
+
+// Everything starts expanded; only the parents you collapse are remembered.
+const COLLAPSED_KEY = 'clickupchat.collapsedTasks'
+
+function loadCollapsed(): Set<string> {
+  try {
+    return new Set(JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]'))
+  } catch {
+    return new Set()
+  }
+}
+
+const collapsed = ref(loadCollapsed())
+
+watch(collapsed, (ids) => {
+  try {
+    localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...ids]))
+  } catch {
+    /* storage blocked — collapsed groups just won't persist */
+  }
+})
+
+function toggleCollapsed(id: string) {
+  const next = new Set(collapsed.value)
+  if (!next.delete(id)) next.add(id)
+  collapsed.value = next
+}
+
+const expandAll = () => (collapsed.value = new Set())
+const collapseAll = () => (collapsed.value = new Set([...collapsed.value, ...parentIds.value]))
 
 // ---------- Filters ----------
 // OR within a facet (new OR review), AND across facets (… AND urgent AND Whitetail).
@@ -116,13 +227,40 @@ watch(
   { deep: true },
 )
 
+// Completed = not open per lib/workflow (closed, complete, approved). Hidden
+// by default — the table is mostly for what's still on my plate.
+const SHOW_COMPLETED_KEY = 'clickupchat.showCompleted'
+
+function loadShowCompleted(): boolean {
+  try {
+    return localStorage.getItem(SHOW_COMPLETED_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
+const showCompleted = ref(loadShowCompleted())
+
+watch(showCompleted, (on) => {
+  try {
+    localStorage.setItem(SHOW_COMPLETED_KEY, on ? '1' : '0')
+  } catch {
+    /* storage blocked — the toggle just won't persist */
+  }
+})
+
 function matches(row: TaskRow, except?: FacetKey): boolean {
-  return FACETS.every(
-    ({ key }) => key === except || !filters.value[key].length || filters.value[key].includes(row[key]),
+  return (
+    FACETS.every(
+      ({ key }) => key === except || !filters.value[key].length || filters.value[key].includes(row[key]),
+    ) &&
+    // Picking a completed status in the Status filter shows it even with the
+    // toggle off — so that facet's own counts skip this check.
+    (showCompleted.value || isOpen(row) || except === 'status' || filters.value.status.includes(row.status))
   )
 }
 
-const filteredRows = computed(() => rows.value.filter((row) => matches(row)))
+const filteredRows = computed(() => rows.value.filter((row) => matches(row) && matchesSearch(row)))
 
 /** Dropdown items per facet. Counts respect the OTHER facets' selections,
  *  so they always say how many rows picking that option would show. */
@@ -139,7 +277,7 @@ const facetOptions = computed(() => {
     const counts = new Map<string, number>()
     for (const row of rows.value) {
       const value = row[facet.key]
-      counts.set(value, (counts.get(value) ?? 0) + (matches(row, facet.key) ? 1 : 0))
+      counts.set(value, (counts.get(value) ?? 0) + (matches(row, facet.key) && matchesSearch(row) ? 1 : 0))
     }
     out[facet.key] = [...counts.keys()].sort(facet.order).map((value) => ({
       value,
@@ -187,6 +325,72 @@ function clearFilters() {
 }
 
 const overdueCount = computed(() => filteredRows.value.filter(isOverdue).length)
+
+// ---------- Table ----------
+
+const features = tableFeatures({
+  rowSortingFeature,
+  sortedRowModel: createSortedRowModel(),
+  sortFns: { alphanumeric: sortFn_alphanumeric, text: sortFn_text, basic: sortFn_basic },
+  rowExpandingFeature,
+  expandedRowModel: createExpandedRowModel(),
+  rowPaginationFeature,
+  paginatedRowModel: createPaginatedRowModel(),
+})
+
+const helper = createColumnHelper<typeof features, TreeRow>()
+const columns = helper.columns([
+  helper.accessor('taskId', { header: 'ID', sortFn: 'alphanumeric' }),
+  helper.accessor('name', { header: 'Task', sortFn: 'text' }),
+  helper.accessor('status', { header: 'Status', sortFn: 'text' }),
+  // Sorts by rank (urgent first); the cell shows the label.
+  helper.accessor('priorityRank', { header: 'Priority', sortFn: 'basic' }),
+  helper.accessor('list', { header: 'List', sortFn: 'text' }),
+  // undefined, not null — sortUndefined only recognizes undefined.
+  helper.accessor((r) => r.due ?? undefined, {
+    id: 'due',
+    header: 'Due',
+    sortFn: 'basic',
+    sortUndefined: 'last',
+  }),
+  helper.accessor('updated', { header: 'Updated', sortFn: 'basic' }),
+])
+
+const sorting = ref<SortingState>([{ id: 'priorityRank', desc: false }])
+const pagination = ref<PaginationState>({ pageIndex: 0, pageSize: 25 })
+const PAGE_SIZES = [25, 50, 100, 200]
+
+const table = useTable({
+  features,
+  columns,
+  data: tree,
+  getRowId: (row: TreeRow) => row.id,
+  getSubRows: (row: TreeRow) => row.subRows,
+  state: computed(() => ({
+    sorting: sorting.value,
+    pagination: pagination.value,
+    expanded: Object.fromEntries(parentIds.value.map((id) => [id, !collapsed.value.has(id)])),
+  })),
+  onSortingChange: (next) => (sorting.value = functionalUpdate(next, sorting.value)),
+  onPaginationChange: (next) => (pagination.value = functionalUpdate(next, pagination.value)),
+  enableSortingRemoval: false,
+  sortDescFirst: false,
+  // Subtasks always render on their parent's page; pages count top-level rows.
+  paginateExpandedRows: false,
+  // The default resets expansion whenever data changes — every filter click
+  // would collapse the tree.
+  autoResetExpanded: false,
+})
+
+const ariaSort = (dir: false | 'asc' | 'desc') =>
+  dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'
+
+const pageRange = computed(() => {
+  const total = table.getRowCount()
+  const { pageIndex, pageSize } = pagination.value
+  const start = Math.min(pageIndex * pageSize + 1, total)
+  return { start, end: Math.min(start + pageSize - 1, total), total }
+})
 </script>
 
 <template>
@@ -195,7 +399,7 @@ const overdueCount = computed(() => filteredRows.value.filter(isOverdue).length)
       <VibeIcon icon="list-check" />
       <h1 class="h5 mb-0 flex-grow-1">My tasks</h1>
       <VibeBadge variant="secondary" pill>
-        {{ hasFilters ? `${filteredRows.length} of ${rows.length}` : rows.length }}
+        {{ filteredRows.length < rows.length ? `${filteredRows.length} of ${rows.length}` : rows.length }}
       </VibeBadge>
       <VibeBadge v-if="overdueCount" variant="danger" pill>{{ overdueCount }} overdue</VibeBadge>
       <span v-if="fetchedAt" class="small text-body-secondary">
@@ -241,50 +445,144 @@ const overdueCount = computed(() => filteredRows.value.filter(isOverdue).length)
             </span>
           </template>
         </VibeDropdown>
+        <div class="completed-toggle ms-2" title="Closed, complete and approved tasks">
+          <VibeFormSwitch v-model="showCompleted" label="Show completed" />
+        </div>
         <VibeButton v-if="hasFilters" variant="link" size="sm" @click="clearFilters()">
           <VibeIcon icon="x-lg" class="me-1" />Clear filters
         </VibeButton>
+        <div v-if="parentIds.length" class="ms-auto d-flex gap-1">
+          <VibeButton variant="secondary" outline size="sm" @click="expandAll()">
+            <VibeIcon icon="arrows-expand" class="me-1" />Expand all
+          </VibeButton>
+          <VibeButton variant="secondary" outline size="sm" @click="collapseAll()">
+            <VibeIcon icon="arrows-collapse" class="me-1" />Collapse all
+          </VibeButton>
+        </div>
       </div>
 
-      <VibeDataTable
-        v-if="rows.length || !loading"
-        :columns="columns"
-        :items="filteredRows"
-        row-key="id"
-        sort-by="priorityRank"
-        :per-page="25"
-        :per-page-options="[25, 50, 100, 200]"
-        search-placeholder="Search tasks…"
-        :empty-text="hasFilters ? 'No tasks match these filters.' : 'No tasks assigned to you.'"
-        striped
-        hover
-        small
-        @row-clicked="(item: TaskRow) => router.push(`/tasks/${item.id}`)"
-      >
-        <template #cell(name)="{ item }">
-          <VibeLink :to="`/tasks/${item.id}`" @click.stop>{{ item.name }}</VibeLink>
-        </template>
-        <template #cell(status)="{ item }">
-          <VibeBadge
-            class="status-badge"
-            text-color="white"
-            :style="{ '--status-color': item.statusColor }"
-          >
-            {{ item.status }}
-          </VibeBadge>
-        </template>
-        <template #cell(priorityRank)="{ item }">
-          <VibeBadge v-if="item.priority" :variant="PRIORITY_VARIANT[item.priority]">
-            {{ item.priority }}
-          </VibeBadge>
-          <span v-else class="text-body-secondary">—</span>
-        </template>
-        <template #cell(due)="{ item }">
-          <span :class="{ 'text-danger fw-semibold': isOverdue(item) }">
-            {{ formatDate(item.due) }}
+      <template v-if="rows.length || !loading">
+        <div class="row mb-3">
+          <div class="col-md-6 mb-2 mb-md-0">
+            <input
+              v-model="search"
+              type="search"
+              class="form-control"
+              placeholder="Search tasks or their parents…"
+            />
+          </div>
+          <div class="col-md-6 d-flex justify-content-md-end align-items-center">
+            <label class="me-2 mb-0" for="tasks-page-size">Show</label>
+            <select
+              id="tasks-page-size"
+              class="form-select form-select-sm w-auto"
+              :value="pagination.pageSize"
+              @change="table.setPageSize(Number(($event.target as HTMLSelectElement).value))"
+            >
+              <option v-for="size in PAGE_SIZES" :key="size" :value="size">{{ size }}</option>
+            </select>
+            <span class="ms-2">per page</span>
+          </div>
+        </div>
+
+        <div class="table-responsive">
+          <table class="table table-sm table-striped table-hover tasks-tree">
+            <thead>
+              <tr v-for="group in table.getHeaderGroups()" :key="group.id">
+                <th
+                  v-for="header in group.headers"
+                  :key="header.id"
+                  class="sortable-header"
+                  :aria-sort="ariaSort(header.column.getIsSorted())"
+                  @click="header.column.getToggleSortingHandler()?.($event)"
+                >
+                  <FlexRender :header="header" />
+                  <span
+                    class="sort-icon ms-1"
+                    :class="header.column.getIsSorted() && `sort-${header.column.getIsSorted()}`"
+                    aria-hidden="true"
+                  />
+                </th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr
+                v-for="row in table.getRowModel().rows"
+                :key="row.id"
+                :class="{ 'tree-context': row.original.context }"
+                :title="CONTEXT_TITLE[row.original.context]"
+                @click="router.push(`/tasks/${row.original.id}`)"
+              >
+                <td class="text-nowrap">{{ row.original.taskId }}</td>
+                <td>
+                  <div class="tree-cell" :style="{ paddingLeft: `${row.depth * 1.5}rem` }">
+                    <button
+                      v-if="row.subRows.length"
+                      type="button"
+                      class="tree-toggle"
+                      :aria-expanded="row.getIsExpanded()"
+                      :aria-label="`${row.getIsExpanded() ? 'Collapse' : 'Expand'} ${row.original.name}`"
+                      @click.stop="toggleCollapsed(row.id)"
+                    >
+                      <VibeIcon :icon="row.getIsExpanded() ? 'chevron-down' : 'chevron-right'" />
+                    </button>
+                    <span v-else class="tree-toggle" aria-hidden="true" />
+                    <VibeLink :to="`/tasks/${row.original.id}`" @click.stop>{{ row.original.name }}</VibeLink>
+                    <VibeBadge
+                      v-if="row.subRows.length"
+                      variant="secondary"
+                      pill
+                      :title="`${row.subRows.length} subtasks shown`"
+                    >
+                      {{ row.subRows.length }}
+                    </VibeBadge>
+                  </div>
+                </td>
+                <td>
+                  <VibeBadge
+                    class="status-badge"
+                    text-color="white"
+                    :style="{ '--status-color': row.original.statusColor }"
+                  >
+                    {{ row.original.status }}
+                  </VibeBadge>
+                </td>
+                <td>
+                  <VibeBadge v-if="row.original.priority" :variant="PRIORITY_VARIANT[row.original.priority]">
+                    {{ row.original.priority }}
+                  </VibeBadge>
+                  <span v-else class="text-body-secondary">—</span>
+                </td>
+                <td class="text-nowrap">{{ row.original.list }}</td>
+                <td class="text-nowrap">
+                  <span :class="{ 'text-danger fw-semibold': isOverdue(row.original) }">
+                    {{ formatDate(row.original.due) }}
+                  </span>
+                </td>
+                <td class="text-nowrap">{{ formatDate(row.original.updated) }}</td>
+              </tr>
+              <tr v-if="!table.getRowModel().rows.length">
+                <td :colspan="columns.length" class="text-center text-body-secondary py-3">
+                  {{ rows.length ? 'No tasks match these filters.' : 'No tasks assigned to you.' }}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div v-if="pageRange.total" class="d-flex flex-wrap justify-content-between align-items-center gap-2">
+          <span class="small text-body-secondary">
+            Showing {{ pageRange.start }} to {{ pageRange.end }} of {{ pageRange.total }} top-level tasks
           </span>
-        </template>
-      </VibeDataTable>
+          <VibePagination
+            v-if="table.getPageCount() > 1"
+            size="sm"
+            :total-pages="table.getPageCount()"
+            :current-page="pagination.pageIndex + 1"
+            @update:current-page="(page: number) => table.setPageIndex(page - 1)"
+          />
+        </div>
+      </template>
     </div>
   </main>
 </template>

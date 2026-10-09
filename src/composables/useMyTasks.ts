@@ -1,5 +1,5 @@
 import { reactive, readonly, watch } from 'vue'
-import { getAssignedTasks } from '../lib/clickup'
+import { getAssignedTasks, getTask, inBatches } from '../lib/clickup'
 import { listCacheKey, readCache, writeCache } from '../lib/taskCache'
 import { stageOf } from '../lib/workflow'
 import type { ClickUpTask, TaskRow } from '../types'
@@ -10,6 +10,9 @@ export const PRIORITY_RANK: Record<string, number> = { urgent: 1, high: 2, norma
 // Module-level: the table and the dashboard share one list and one cache read.
 const state = reactive({
   rows: [] as TaskRow[],
+  /** Parents of my subtasks that aren't assigned to me, so the table can show
+   *  each subtask's full path. Kept out of `rows` so dashboard counts skip them. */
+  ancestors: [] as TaskRow[],
   /** When `rows` was last fetched from ClickUp (0 = never). */
   fetchedAt: 0,
   loading: false,
@@ -19,6 +22,11 @@ const state = reactive({
 })
 
 let loadPromise: Promise<void> | null = null
+
+interface CachedList {
+  rows: TaskRow[]
+  ancestors: TaskRow[]
+}
 
 function toRow(task: ClickUpTask): TaskRow {
   const priority = task.priority?.priority ?? ''
@@ -38,6 +46,25 @@ function toRow(task: ClickUpTask): TaskRow {
     updated: Number(task.date_updated),
     list: task.list.name,
     lists: [task.list.name, ...task.locations.map((l) => l.name)],
+    parentId: task.parent,
+  }
+}
+
+/** Walk up from my subtasks, fetching each parent not already in `rows`,
+ *  until every chain reaches a known or top-level task. A parent that fails
+ *  to load (no access, deleted) ends its chain — the child shows as top-level. */
+async function fetchAncestors(rows: readonly TaskRow[]): Promise<TaskRow[]> {
+  const known = new Set(rows.map((r) => r.id))
+  const found: TaskRow[] = []
+  let parentIds = rows.map((r) => r.parentId)
+  for (;;) {
+    const missing = [...new Set(parentIds)].filter((id): id is string => !!id && !known.has(id))
+    if (!missing.length) return found
+    missing.forEach((id) => known.add(id))
+    const level: TaskRow[] = []
+    await inBatches(missing, 4, async (id) => level.push(toRow(await getTask(id))))
+    found.push(...level)
+    parentIds = level.map((r) => r.parentId)
   }
 }
 
@@ -52,10 +79,13 @@ export function useMyTasks() {
     state.error = ''
     try {
       const tasks = await getAssignedTasks(chat.workspaceId, chat.me.id)
-      state.rows = tasks.map(toRow)
+      const rows = tasks.map(toRow)
+      const ancestors = await fetchAncestors(rows)
+      state.rows = rows
+      state.ancestors = ancestors
       state.fetchedAt = Date.now()
       state.loaded = true
-      await writeCache(cacheKey(), state.rows)
+      await writeCache<CachedList>(cacheKey(), { rows, ancestors })
     } catch (e) {
       state.error = e instanceof Error ? e.message : String(e)
     } finally {
@@ -66,9 +96,11 @@ export function useMyTasks() {
   /** Render from cache; only hit ClickUp when nothing is cached yet. */
   function ensureLoaded(): Promise<void> {
     loadPromise ??= (async () => {
-      const cached = await readCache<TaskRow[]>(cacheKey())
+      const cached = await readCache<CachedList>(cacheKey())
       if (cached) {
-        state.rows = cached.data.map((r) => ({ ...r, stage: stageOf(r.status, r.statusType) }))
+        const restage = (r: TaskRow) => ({ ...r, stage: stageOf(r.status, r.statusType) })
+        state.rows = cached.data.rows.map(restage)
+        state.ancestors = cached.data.ancestors.map(restage)
         state.fetchedAt = cached.savedAt
         state.loaded = true
       } else {
@@ -87,6 +119,7 @@ watch(
   (ready) => {
     if (ready) return
     state.rows = []
+    state.ancestors = []
     state.fetchedAt = 0
     state.loaded = false
     state.error = ''

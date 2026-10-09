@@ -147,6 +147,19 @@ async function request<T>(
   }
 }
 
+/** Run async work over items a few at a time — full parallel bursts trip
+ *  transient 5xx errors on ClickUp's side, and the API rate-limits at 100
+ *  req/min per token. Failures are swallowed per item. */
+export async function inBatches<T>(
+  items: readonly T[],
+  batchSize: number,
+  fn: (item: T) => Promise<unknown>,
+) {
+  for (let i = 0; i < items.length; i += batchSize) {
+    await Promise.allSettled(items.slice(i, i + batchSize).map(fn))
+  }
+}
+
 function pageData<T>(page: Paged<T> | T[] | undefined): T[] {
   if (!page) return []
   if (Array.isArray(page)) return page

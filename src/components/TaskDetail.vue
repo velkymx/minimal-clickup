@@ -15,7 +15,7 @@ import {
   type Variant,
 } from '@velkymx/vibeui'
 import { useRoute } from 'vue-router'
-import { getCommentReplies, getTask, getTaskComments } from '../lib/clickup'
+import { getCommentReplies, getTask, getTaskComments, inBatches } from '../lib/clickup'
 import { markdownToSafeHtml } from '../lib/markdown'
 import { ageLabel, readCache, taskCacheKey, writeCache } from '../lib/taskCache'
 import type {
@@ -55,13 +55,6 @@ interface TaskBundle {
 const now = ref(Date.now())
 const clock = setInterval(() => (now.value = Date.now()), 30_000)
 onUnmounted(() => clearInterval(clock))
-
-/** A few at a time — ClickUp rate-limits at 100 req/min per token. */
-async function inBatches<T>(items: readonly T[], size: number, fn: (item: T) => Promise<unknown>) {
-  for (let i = 0; i < items.length; i += size) {
-    await Promise.allSettled(items.slice(i, i + size).map(fn))
-  }
-}
 
 function apply(bundle: TaskBundle, savedAt: number) {
   task.value = bundle.task
