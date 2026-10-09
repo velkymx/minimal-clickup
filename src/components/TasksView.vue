@@ -54,8 +54,17 @@ onUnmounted(() => clearInterval(clock))
 
 onMounted(ensureLoaded)
 
-const formatDate = (ms: unknown) =>
-  typeof ms === 'number' ? new Date(ms).toLocaleDateString() : '—'
+const THIS_YEAR = new Date().getFullYear()
+
+/** "Oct 8"; dates in other years add it ("Dec 18, 2025"). */
+const formatDate = (ms: number | null) =>
+  ms === null
+    ? '—'
+    : new Date(ms).toLocaleDateString(undefined, {
+        month: 'short',
+        day: 'numeric',
+        year: new Date(ms).getFullYear() === THIS_YEAR ? undefined : 'numeric',
+      })
 
 // ---------- Tree ----------
 // Subtasks nest under their parent. Parents that aren't assigned to me (or
@@ -119,6 +128,31 @@ const tree = computed<TreeRow[]>(() => {
   }
   return roots
 })
+
+// Subtask names often repeat their area ("Browse: …"). When every sibling
+// shares the prefix it's noise, so the table mutes it; mixed prefixes carry
+// meaning and stay.
+const PREFIX = /^[^:]{1,40}:(?=\s)/
+
+const mutedPrefix = computed(() => {
+  const out = new Map<string, string>()
+  const walk = (list: TreeRow[]) =>
+    list.forEach((node) => {
+      const prefixes = node.subRows.map((c) => PREFIX.exec(c.name)?.[0])
+      const shared = prefixes[0]
+      if (node.subRows.length > 1 && shared && prefixes.every((p) => p === shared)) {
+        node.subRows.forEach((c) => out.set(c.id, shared))
+      }
+      walk(node.subRows)
+    })
+  walk(tree.value)
+  return out
+})
+
+function nameParts(row: TaskRow): [prefix: string, rest: string] {
+  const prefix = mutedPrefix.value.get(row.id) ?? ''
+  return [prefix, row.name.slice(prefix.length)]
+}
 
 const parentIds = computed(() => {
   const ids: string[] = []
@@ -374,6 +408,24 @@ const table = useTable({
   autoResetExpanded: false,
 })
 
+const visibleRows = computed(() => table.getRowModel().rows)
+
+// Tree geometry: each level indents one 24px chevron slot. Top-level text
+// starts 36px into the cell (8px padding + 24px slot + 4px gap).
+const LEVEL = 24
+const guideX = (level: number) => 20 + LEVEL * level // chevron center
+
+/** Inside an open group a row's bottom line starts where the next row's text
+ *  does, keeping the guide gutter clear; otherwise it runs full width. */
+const separatorInsets = computed(() =>
+  visibleRows.value.map((_, i) => {
+    const next = visibleRows.value[i + 1]
+    return next && next.depth > 0 ? 36 + LEVEL * next.depth : 0
+  }),
+)
+
+const RIGHT_ALIGNED = new Set(['due', 'updated'])
+
 const ariaSort = (dir: false | 'asc' | 'desc') =>
   dir === 'asc' ? 'ascending' : dir === 'desc' ? 'descending' : 'none'
 
@@ -494,6 +546,7 @@ const pageRange = computed(() => {
                 <th
                   v-for="header in group.headers"
                   :key="header.id"
+                  :class="{ 'text-end': RIGHT_ALIGNED.has(header.column.id) }"
                   :aria-sort="ariaSort(header.column.getIsSorted())"
                   @click="header.column.getToggleSortingHandler()?.($event)"
                 >
@@ -508,34 +561,58 @@ const pageRange = computed(() => {
             </thead>
             <tbody>
               <tr
-                v-for="row in table.getRowModel().rows"
+                v-for="(row, i) in visibleRows"
                 :key="row.id"
-                :class="{ 'row-dim': row.original.context || !isOpen(row.original) }"
+                :class="{
+                  child: row.depth > 0,
+                  'row-dim': row.original.context || !isOpen(row.original),
+                  inset: separatorInsets[i],
+                }"
+                :style="separatorInsets[i] ? { '--inset': `${separatorInsets[i]}px` } : undefined"
                 :title="CONTEXT_TITLE[row.original.context]"
                 @click="router.push(`/tasks/${row.original.id}`)"
               >
                 <td class="c-id">{{ row.original.taskId }}</td>
-                <td>
-                  <div class="tree-cell" :style="{ paddingLeft: `${row.depth * 1.5}rem` }">
+                <td class="c-name">
+                  <span
+                    v-for="level in row.depth"
+                    :key="level"
+                    class="guide"
+                    :style="{ left: `${guideX(level - 1)}px` }"
+                  />
+                  <span
+                    v-if="row.subRows.length && row.getIsExpanded()"
+                    class="guide from-chev"
+                    :style="{ left: `${guideX(row.depth)}px` }"
+                  />
+                  <div class="tree-cell" :style="{ paddingLeft: `${LEVEL * row.depth}px` }">
                     <button
                       v-if="row.subRows.length"
                       type="button"
-                      class="tree-toggle"
+                      class="chev"
+                      :class="{ 'is-closed': !row.getIsExpanded() }"
                       :aria-expanded="row.getIsExpanded()"
-                      :aria-label="`${row.getIsExpanded() ? 'Collapse' : 'Expand'} ${row.original.name}`"
+                      :aria-label="`${row.getIsExpanded() ? 'Collapse' : 'Expand'} subtasks of ${row.original.name}`"
                       @click.stop="toggleCollapsed(row.id)"
                     >
-                      <VibeIcon :icon="row.getIsExpanded() ? 'chevron-down' : 'chevron-right'" />
+                      <svg width="16" height="16" viewBox="0 0 16 16" aria-hidden="true">
+                        <path
+                          d="M4 6l4 4 4-4"
+                          fill="none"
+                          stroke="currentColor"
+                          stroke-width="1.5"
+                          stroke-linecap="round"
+                          stroke-linejoin="round"
+                        />
+                      </svg>
                     </button>
-                    <span v-else class="tree-toggle" aria-hidden="true" />
-                    <VibeLink :to="`/tasks/${row.original.id}`" :title="row.original.name" @click.stop>
-                      {{ row.original.name }}
+                    <span v-else class="slot" aria-hidden="true" />
+                    <VibeLink class="ttl" :to="`/tasks/${row.original.id}`" :title="row.original.name" @click.stop>
+                      <template v-for="[prefix, rest] in [nameParts(row.original)]" :key="prefix">
+                        <span v-if="prefix" class="pre">{{ prefix }}</span>{{ rest }}
+                      </template>
                     </VibeLink>
-                    <span
-                      v-if="row.subRows.length"
-                      class="child-count"
-                      :title="`${row.subRows.length} subtasks shown`"
-                    >
+                    <span v-if="row.subRows.length" class="count" :title="`${row.subRows.length} subtasks shown`">
                       {{ row.subRows.length }}
                     </span>
                   </div>
@@ -562,7 +639,7 @@ const pageRange = computed(() => {
                   <span v-else class="c-empty">—</span>
                 </td>
                 <td class="c-list">{{ row.original.list }}</td>
-                <td :class="row.original.due === null ? 'c-empty' : 'c-date'">
+                <td class="c-date" :class="{ 'c-empty': row.original.due === null }">
                   <span :class="{ 'text-danger fw-semibold': isOverdue(row.original) }">
                     {{ formatDate(row.original.due) }}
                   </span>

@@ -303,21 +303,27 @@ body,
 }
 
 /* ---------- My tasks table ----------
-   Values from the "D · All together" Claude Design mock: tinted status
-   pills, comfortable density, no stripes, completed rows dimmed. The mock is
-   dark-only; these Bootstrap variables resolve to its exact colors in dark
-   mode and to sensible equivalents in light. */
+   Values from the Claude Design mocks "D · All together" (tinted status
+   pills, comfortable density, no stripes, completed rows dimmed) and
+   "E · Subtasks" (tree guides, inset separators, 2-line names, muted shared
+   prefixes). The mocks are dark-only; these Bootstrap variables resolve to
+   their exact colors in dark mode and to sensible equivalents in light. */
 .tasks-tree {
   --tt-name: var(--bs-emphasis-color);
   --tt-muted: var(--bs-secondary-color);
-  --tt-faint: color-mix(in srgb, var(--bs-body-color) 58%, var(--bs-body-bg));
+  --tt-child: var(--bs-body-color);
+  --tt-faint: color-mix(in srgb, var(--bs-body-color) 63.5%, var(--bs-body-bg));
   --tt-line: rgba(var(--bs-emphasis-color-rgb), 0.08);
+  --tt-guide: rgba(var(--bs-emphasis-color-rgb), 0.14);
   --tt-hover: rgba(var(--bs-emphasis-color-rgb), 0.06);
   /* Status pill text = status color mixed halfway toward this. */
   --tt-pill-ink: #000;
   width: 100%;
   min-width: 1150px;
-  border-collapse: collapse;
+  /* separate, not collapse: a collapsed header border lends half a pixel to
+     the first row. Cells draw their own separators anyway. */
+  border-collapse: separate;
+  border-spacing: 0;
   table-layout: fixed;
 }
 
@@ -326,17 +332,35 @@ body,
   --tt-pill-ink: #fff;
 }
 
-.tasks-tree th,
 .tasks-tree td {
-  padding: 6px 8px;
+  padding: 6px 8px 7px;
   line-height: 24px;
-  vertical-align: middle;
-  border-bottom: 1px solid var(--tt-line);
+  vertical-align: top;
+  /* Separator as a background so it can be inset (tr.inset below). */
+  background-image: linear-gradient(var(--tt-line), var(--tt-line));
+  background-repeat: no-repeat;
+  background-size: 100% 1px;
+  background-position: 0 100%;
+}
+
+/* Inside an open group the separator starts under the next row's text,
+   leaving the ID column and the guide gutter clear. */
+.tasks-tree tr.inset > td.c-id {
+  background-image: none;
+}
+
+.tasks-tree tr.inset > td.c-name {
+  background-size: calc(100% - var(--inset)) 1px;
+  background-position: var(--inset) 100%;
 }
 
 /* The mock has no header row; this one stays quiet. VibeDataTable's sort
    arrows are scoped CSS, so they're repeated here. */
 .tasks-tree th {
+  padding: 6px 8px;
+  line-height: 24px;
+  vertical-align: middle;
+  border-bottom: 1px solid rgba(var(--bs-emphasis-color-rgb), 0.16);
   font-size: 14px;
   font-weight: 600;
   color: var(--tt-muted);
@@ -344,7 +368,6 @@ body,
   white-space: nowrap;
   cursor: pointer;
   user-select: none;
-  border-bottom-color: rgba(var(--bs-emphasis-color-rgb), 0.16);
 }
 
 .sort-icon {
@@ -390,10 +413,29 @@ body,
   text-underline-offset: 3px;
 }
 
-.tasks-tree a:focus-visible {
+.tasks-tree a:focus-visible,
+.tasks-tree .chev:focus-visible {
   outline: 2px solid var(--bs-link-color);
   outline-offset: 2px;
-  border-radius: 2px;
+  border-radius: 4px;
+}
+
+/* Subtasks sit back from their parents. */
+.tasks-tree tr.child a {
+  color: var(--tt-child);
+  font-weight: 400;
+}
+
+.tasks-tree tr.child a:hover {
+  color: var(--bs-link-hover-color);
+}
+
+.tasks-tree .pre {
+  color: var(--tt-faint);
+}
+
+.tasks-tree a:hover .pre {
+  color: inherit;
 }
 
 /* Completed tasks, and parents shown only as context, fade back. */
@@ -421,49 +463,97 @@ body,
   text-overflow: ellipsis;
 }
 
+.tasks-tree .c-date {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
 .tasks-tree .c-empty {
   color: var(--tt-faint);
 }
 
+.tasks-tree td.c-name {
+  position: relative;
+}
+
 .tree-cell {
   display: flex;
-  align-items: center;
-  gap: 0.35rem;
+  align-items: flex-start;
+  gap: 4px;
   min-width: 0;
 }
 
-/* Flex items won't shrink below their text without min-width: 0, so the
-   ellipsis lives on the link rather than the cell. */
-.tree-cell a {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+/* Vertical tree guides through the chevron column of each ancestor level;
+   a parent's own guide starts below its chevron. */
+.tasks-tree .guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--tt-guide);
 }
 
-.tree-toggle {
-  flex: 0 0 1.25rem;
+.tasks-tree .guide.from-chev {
+  top: 30px;
+}
+
+.tasks-tree .slot {
+  flex: none;
+  width: 24px;
+  height: 24px;
+}
+
+.tasks-tree .chev {
+  flex: none;
+  width: 24px;
+  height: 24px;
   display: inline-flex;
+  align-items: center;
   justify-content: center;
   padding: 0;
   border: 0;
+  border-radius: 4px;
   background: none;
   color: var(--tt-muted);
+  cursor: pointer;
 }
 
-.tree-toggle:hover {
-  color: var(--bs-body-color);
-}
-
-.child-count {
-  flex: none;
-  padding: 0 6px;
-  font-size: 12px;
-  line-height: 18px;
-  border-radius: 999px;
+.tasks-tree .chev:hover {
   background: var(--tt-line);
+  color: var(--tt-name);
+}
+
+.tasks-tree .chev svg {
+  transition: transform 0.15s ease;
+}
+
+.tasks-tree .chev.is-closed svg {
+  transform: rotate(-90deg);
+}
+
+/* Up to two lines, then an ellipsis. Flex items won't shrink below their
+   text without min-width: 0. */
+.tasks-tree .ttl {
+  min-width: 0;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.tasks-tree .count {
+  flex: none;
+  box-sizing: border-box;
+  height: 18px;
+  margin: 3px 0 0 4px;
+  padding: 0 6px;
+  border: 1px solid rgba(var(--bs-emphasis-color-rgb), 0.16);
+  border-radius: 9px;
+  font-size: 12px;
+  line-height: 16px;
   color: var(--tt-muted);
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
 }
 
 /* Status color is ClickUp's per-status hex. */
