@@ -29,7 +29,6 @@ import {
   VibePagination,
   VibeSpinner,
   type DropdownItem,
-  type Variant,
 } from '@velkymx/vibeui'
 import { useRoute, useRouter } from 'vue-router'
 import { PRIORITY_RANK, useMyTasks } from '../composables/useMyTasks'
@@ -40,13 +39,6 @@ import type { TaskRow } from '../types'
 const router = useRouter()
 const route = useRoute()
 const { tasks, ensureLoaded, refreshFromClickUp } = useMyTasks()
-
-const PRIORITY_VARIANT: Record<string, Variant> = {
-  urgent: 'danger',
-  high: 'warning',
-  normal: 'primary',
-  low: 'secondary',
-}
 
 const rows = computed(() => tasks.rows as TaskRow[])
 // Loading until the cache read (or first fetch) lands, so the empty-state
@@ -486,13 +478,22 @@ const pageRange = computed(() => {
         </div>
 
         <div class="table-responsive">
-          <table class="table table-sm table-striped table-hover tasks-tree">
+          <table class="tasks-tree">
+            <!-- Name width is the mock's; List takes whatever is left. -->
+            <colgroup>
+              <col style="width: 96px" />
+              <col style="width: 480px" />
+              <col style="width: 136px" />
+              <col style="width: 104px" />
+              <col />
+              <col style="width: 104px" />
+              <col style="width: 112px" />
+            </colgroup>
             <thead>
               <tr v-for="group in table.getHeaderGroups()" :key="group.id">
                 <th
                   v-for="header in group.headers"
                   :key="header.id"
-                  class="sortable-header"
                   :aria-sort="ariaSort(header.column.getIsSorted())"
                   @click="header.column.getToggleSortingHandler()?.($event)"
                 >
@@ -509,11 +510,11 @@ const pageRange = computed(() => {
               <tr
                 v-for="row in table.getRowModel().rows"
                 :key="row.id"
-                :class="{ 'tree-context': row.original.context }"
+                :class="{ 'row-dim': row.original.context || !isOpen(row.original) }"
                 :title="CONTEXT_TITLE[row.original.context]"
                 @click="router.push(`/tasks/${row.original.id}`)"
               >
-                <td class="text-nowrap">{{ row.original.taskId }}</td>
+                <td class="c-id">{{ row.original.taskId }}</td>
                 <td>
                   <div class="tree-cell" :style="{ paddingLeft: `${row.depth * 1.5}rem` }">
                     <button
@@ -527,42 +528,49 @@ const pageRange = computed(() => {
                       <VibeIcon :icon="row.getIsExpanded() ? 'chevron-down' : 'chevron-right'" />
                     </button>
                     <span v-else class="tree-toggle" aria-hidden="true" />
-                    <VibeLink :to="`/tasks/${row.original.id}`" @click.stop>{{ row.original.name }}</VibeLink>
-                    <VibeBadge
+                    <VibeLink :to="`/tasks/${row.original.id}`" :title="row.original.name" @click.stop>
+                      {{ row.original.name }}
+                    </VibeLink>
+                    <span
                       v-if="row.subRows.length"
-                      variant="secondary"
-                      pill
+                      class="child-count"
                       :title="`${row.subRows.length} subtasks shown`"
                     >
                       {{ row.subRows.length }}
-                    </VibeBadge>
+                    </span>
                   </div>
                 </td>
                 <td>
-                  <VibeBadge
-                    class="status-badge"
-                    text-color="white"
-                    :style="{ '--status-color': row.original.statusColor }"
-                  >
+                  <span class="status-pill" :style="{ '--status-color': row.original.statusColor }">
                     {{ row.original.status }}
-                  </VibeBadge>
+                  </span>
                 </td>
                 <td>
-                  <VibeBadge v-if="row.original.priority" :variant="PRIORITY_VARIANT[row.original.priority]">
+                  <span v-if="row.original.priority" class="prio" :class="`prio-${row.original.priority}`">
+                    <svg width="12" height="12" viewBox="0 0 12 12" aria-hidden="true">
+                      <path
+                        d="M2.5 11.25V1.25"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="1.5"
+                        stroke-linecap="round"
+                      />
+                      <path d="M3 1.75h6.5L8 4.25l1.5 2.5H3z" fill="currentColor" />
+                    </svg>
                     {{ row.original.priority }}
-                  </VibeBadge>
-                  <span v-else class="text-body-secondary">—</span>
+                  </span>
+                  <span v-else class="c-empty">—</span>
                 </td>
-                <td class="text-nowrap">{{ row.original.list }}</td>
-                <td class="text-nowrap">
+                <td class="c-list">{{ row.original.list }}</td>
+                <td :class="row.original.due === null ? 'c-empty' : 'c-date'">
                   <span :class="{ 'text-danger fw-semibold': isOverdue(row.original) }">
                     {{ formatDate(row.original.due) }}
                   </span>
                 </td>
-                <td class="text-nowrap">{{ formatDate(row.original.updated) }}</td>
+                <td class="c-date">{{ formatDate(row.original.updated) }}</td>
               </tr>
               <tr v-if="!table.getRowModel().rows.length">
-                <td :colspan="columns.length" class="text-center text-body-secondary py-3">
+                <td :colspan="columns.length" class="c-empty text-center py-3">
                   {{ rows.length ? 'No tasks match these filters.' : 'No tasks assigned to you.' }}
                 </td>
               </tr>
