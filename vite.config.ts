@@ -6,6 +6,12 @@ import vue from '@vitejs/plugin-vue'
 export default defineConfig({
   plugins: [vue()],
   server: {
+    // Fixed port: the saved token lives in localStorage, which is per-origin.
+    // Letting Vite bump to the next free port (other projects hold 5173) lands
+    // on a fresh origin with no session and re-prompts for the token. With
+    // strictPort, a second `npm run dev` fails loudly instead of drifting.
+    port: 5180,
+    strictPort: true,
     proxy: {
       // Browser can't call api.clickup.com directly (CORS); dev server proxies it.
       '/clickup': {

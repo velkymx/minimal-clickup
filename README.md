@@ -36,7 +36,11 @@ Get your API key in ClickUp: avatar → **Settings** → **Apps** → **API Toke
 - `VITE_CLICKUP_WORKSPACE_ID` — optional; defaults to your first workspace
 
 No `.env.local`? The app opens a setup dialog instead and keeps the key in
-`localStorage`.
+`localStorage`. That storage is per-origin, so the dev server is pinned to
+http://localhost:5180 (`strictPort`) — if that port is taken, `npm run dev`
+errors out rather than moving to a new port that wouldn't have your saved key.
+"Port 5180 is already in use" usually means the app is already running in
+another terminal.
 
 ## How it works
 
