@@ -56,7 +56,8 @@ export interface ChatMessage {
   content?: string
   date: number
   parent_channel?: string
-  parent_message_id?: string
+  /** Set on thread replies: the message they reply to. */
+  parent_message?: string
   replies_count?: number
   /** Not included in list responses — fetched lazily via the reactions endpoint. */
   reactions?: readonly ChatReaction[]
@@ -69,10 +70,10 @@ export interface PendingSend {
   channelId: string
   /** Set when the pending message is a thread reply. */
   threadParentId?: string
-  /** Markdown that will be sent. */
+  /** Markdown that will be sent (mentions already linked). */
   content: string
-  /** Original composer HTML, restored on undo. */
-  html?: string
+  /** Original composer input (Quill HTML or plain text), restored on undo. */
+  draft?: string
   /** Epoch ms when the message auto-sends. */
   sendAt: number
   failed?: boolean
@@ -86,6 +87,16 @@ export interface ChatBox {
   minimized: boolean
   /** Oldest → newest, like the main pane. */
   messages: ChatMessage[]
+  loading: boolean
+  /** Reply thread shown in place of the conversation (null = conversation). */
+  thread: ChatThread | null
+}
+
+/** An open reply thread: parent message plus its replies. */
+export interface ChatThread {
+  parent: ChatMessage
+  /** Oldest → newest. */
+  replies: ChatMessage[]
   loading: boolean
 }
 

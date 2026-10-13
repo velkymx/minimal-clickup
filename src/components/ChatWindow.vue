@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, nextTick, onUnmounted, ref, watch } from 'vue'
+import { computed, nextTick, onUnmounted, reactive, ref, watch } from 'vue'
+import type Quill from 'quill'
 import {
   VibeButton,
   VibeFormTextarea,
@@ -11,9 +12,11 @@ import {
 } from '@velkymx/vibeui'
 import { useRoute, useRouter } from 'vue-router'
 import { useChat } from '../composables/useChat'
+import { useMentionSuggest, useTextareaMentions } from '../composables/useMentionSuggest'
 import { htmlToMarkdown, htmlToText, markdownToSafeHtml } from '../lib/markdown'
 import type { PendingSend } from '../types'
 import GiphyPicker from './GiphyPicker.vue'
+import MentionMenu from './MentionMenu.vue'
 import MessageItem from './MessageItem.vue'
 
 const {
@@ -25,6 +28,7 @@ const {
   memberFor,
   openChannel,
   closeChannel,
+  openThread,
   closeThread,
   sendThreadReply,
 } = useChat()
@@ -105,7 +109,7 @@ const pendingHere = computed(() =>
 
 const pendingInThread = computed(() =>
   state.pending.filter(
-    (p) => p.threadParentId && p.threadParentId === state.threadParent?.id,
+    (p) => p.threadParentId && p.threadParentId === state.thread?.parent.id,
   ),
 )
 
@@ -117,9 +121,9 @@ function undo(item: PendingSend) {
   const restored = undoSend(item.id)
   if (!restored) return
   if (restored.threadParentId) {
-    replyDraft.value = restored.content
+    replyDraft.value = restored.draft ?? restored.content
   } else {
-    draft.value = restored.html ?? restored.content
+    draft.value = restored.draft ?? restored.content
   }
 }
 
@@ -149,10 +153,12 @@ watch(
 
 const replyDraft = ref('')
 const threadScroller = ref<HTMLElement | null>(null)
+const replyComposer = ref<HTMLElement | null>(null)
+const replyMention = reactive(useTextareaMentions(replyComposer, replyDraft))
 
 // New replies (or thread open) → scroll the thread to its latest reply.
 watch(
-  () => [state.threadParent?.id, state.threadReplies.length],
+  () => [state.thread?.parent.id, state.thread?.replies.length],
   async () => {
     await nextTick()
     const el = threadScroller.value
@@ -161,15 +167,16 @@ watch(
 )
 
 const threadOpen = computed({
-  get: () => state.threadParent !== null,
+  get: () => state.thread !== null,
   set: (open: boolean) => {
     if (!open) closeThread()
   },
 })
 
 function threadCompact(index: number): boolean {
-  const current = state.threadReplies[index]
-  const previous = state.threadReplies[index - 1]
+  const replies = state.thread?.replies ?? []
+  const current = replies[index]
+  const previous = replies[index - 1]
   if (!previous || !current.user_id) return false
   return (
     previous.user_id === current.user_id &&
@@ -185,6 +192,7 @@ function submitReply() {
 }
 
 function onReplyKeydown(event: KeyboardEvent) {
+  if (replyMention.handleKey(event)) return
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     submitReply()
@@ -209,9 +217,37 @@ function sendGif(url: string, title: string) {
   send(`[${title || 'GIF'}](${url})`) // queued — undo window applies
 }
 
+// ---------- @mentions in the main editor ----------
+
+let quill: Quill | null = null
+
+const mainMention = reactive(
+  useMentionSuggest((member, query) => {
+    const selection = quill?.getSelection()
+    if (!quill || !selection) return
+    const start = Math.max(0, selection.index - query.length - 1)
+    quill.deleteText(start, selection.index - start, 'user')
+    quill.insertText(start, `@${member.username} `, 'user')
+    quill.setSelection(start + member.username.length + 2, 0, 'user')
+  }),
+)
+
+// VibeFormWysiwyg types its `ready` payload as unknown — it's the Quill instance.
+function onEditorReady(editor: unknown) {
+  const instance = editor as Quill
+  quill = instance
+  // Fires on typing and caret moves: track the @query before the caret.
+  instance.on('editor-change', () => {
+    const selection = instance.getSelection()
+    if (selection) mainMention.update(instance.getText(0, selection.index))
+    else mainMention.dismiss()
+  })
+}
+
 // Capture phase so Quill's own Enter handler (newline) never fires for plain
 // Enter. Shift+Enter still inserts a newline inside the editor.
 function onKeydown(event: KeyboardEvent) {
+  if (mainMention.handleKey(event)) return
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     event.stopPropagation()
@@ -254,6 +290,7 @@ function onKeydown(event: KeyboardEvent) {
           :compact="isCompact(index) && index !== firstNewIndex"
           :mine="message.user_id === state.me?.id"
           :unseen="firstNewIndex !== -1 && index >= firstNewIndex"
+          @open-thread="openThread"
         />
       </template>
 
@@ -287,7 +324,12 @@ function onKeydown(event: KeyboardEvent) {
     </VibeButton>
     </div>
 
-    <footer class="composer" @keydown.capture="onKeydown">
+    <footer class="composer position-relative" @keydown.capture="onKeydown">
+      <MentionMenu
+        :matches="mainMention.matches"
+        :active="mainMention.active"
+        @pick="mainMention.pick"
+      />
       <VibeFormWysiwyg
         v-model="draft"
         class="composer-input"
@@ -297,6 +339,7 @@ function onKeydown(event: KeyboardEvent) {
         :placeholder="activeChannel ? `Message ${activeChannel.displayName || activeChannel.name}` : 'Pick a channel first'"
         :disabled="!activeChannel"
         @component-error="(err: { message: string }) => toast.error(err.message)"
+        @ready="onEditorReady"
       />
       <div class="composer-buttons">
         <VibeButton
@@ -322,32 +365,32 @@ function onKeydown(event: KeyboardEvent) {
     <GiphyPicker v-model="showGiphy" @pick="sendGif" />
 
     <VibeOffcanvas v-model="threadOpen" title="Thread" placement="end" :backdrop="false" scroll>
-      <div v-if="state.threadParent" class="thread-panel">
+      <div v-if="state.thread" class="thread-panel">
         <div ref="threadScroller" class="thread-scroll">
           <MessageItem
-            :message="state.threadParent"
-            :member="memberFor(state.threadParent.user_id)"
+            :message="state.thread.parent"
+            :member="memberFor(state.thread.parent.user_id)"
             :compact="false"
-            :mine="state.threadParent.user_id === state.me?.id"
+            :mine="state.thread.parent.user_id === state.me?.id"
             in-thread
           />
 
           <div class="thread-divider text-body-secondary">
-            {{ state.threadReplies.length }}
-            {{ state.threadReplies.length === 1 ? 'reply' : 'replies' }}
+            {{ state.thread.replies.length }}
+            {{ state.thread.replies.length === 1 ? 'reply' : 'replies' }}
           </div>
 
-          <div v-if="state.loadingThread" class="p-3 text-center">
+          <div v-if="state.thread.loading" class="p-3 text-center">
             <VibeSpinner size="sm" />
           </div>
           <div
-            v-else-if="!state.threadReplies.length"
+            v-else-if="!state.thread.replies.length"
             class="p-3 text-center text-body-secondary"
           >
             No replies yet.
           </div>
           <MessageItem
-            v-for="(reply, index) in state.threadReplies"
+            v-for="(reply, index) in state.thread.replies"
             :key="reply.id"
             :message="reply"
             :member="memberFor(reply.user_id)"
@@ -374,12 +417,24 @@ function onKeydown(event: KeyboardEvent) {
           </div>
         </div><!-- /thread-scroll -->
 
-        <div class="thread-composer" @keydown="onReplyKeydown">
+        <div
+          ref="replyComposer"
+          class="thread-composer position-relative"
+          @keydown="onReplyKeydown"
+          @input="replyMention.track"
+          @click="replyMention.track"
+          @keyup="replyMention.track"
+        >
+          <MentionMenu
+            :matches="replyMention.matches"
+            :active="replyMention.active"
+            @pick="replyMention.pick"
+          />
           <VibeFormTextarea
             v-model="replyDraft"
             :rows="2"
             no-resize
-            placeholder="Reply… (Enter to send)"
+            placeholder="Reply… (Enter to send, @ to mention)"
           />
           <VibeButton
             variant="primary"

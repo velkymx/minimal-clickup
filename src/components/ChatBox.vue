@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch, type DeepReadonly } from 'vue'
+import { computed, nextTick, reactive, ref, watch, type DeepReadonly } from 'vue'
 import {
   VibeBadge,
   VibeButton,
@@ -12,14 +12,27 @@ import {
 } from '@velkymx/vibeui'
 import { useRouter } from 'vue-router'
 import { UNREAD_UNKNOWN, useChat } from '../composables/useChat'
+import { useTextareaMentions } from '../composables/useMentionSuggest'
 import { markdownToSafeHtml } from '../lib/markdown'
-import type { ChatBox, PendingSend } from '../types'
+import type { ChatBox, ChatMessage, PendingSend } from '../types'
+import MentionMenu from './MentionMenu.vue'
 import MessageItem from './MessageItem.vue'
 
 /** One docked conversation (LinkedIn / Google Chat style). */
 const props = defineProps<{ box: DeepReadonly<ChatBox> }>()
 
-const { state, memberFor, send, undoSend, sendNow, closeBox, toggleBox } = useChat()
+const {
+  state,
+  memberFor,
+  send,
+  undoSend,
+  sendNow,
+  closeBox,
+  toggleBox,
+  openBoxThread,
+  closeBoxThread,
+  sendThreadReply,
+} = useChat()
 const router = useRouter()
 const toast = useToast()
 
@@ -34,9 +47,9 @@ const unread = computed(() => {
   return n === UNREAD_UNKNOWN ? '●' : n >= 10 ? '9+' : String(n)
 })
 
-function isCompact(index: number): boolean {
-  const current = props.box.messages[index]
-  const previous = props.box.messages[index - 1]
+function isCompact(list: readonly DeepReadonly<ChatMessage>[], index: number): boolean {
+  const current = list[index]
+  const previous = list[index - 1]
   if (!previous || !current.user_id) return false
   return (
     previous.user_id === current.user_id &&
@@ -44,10 +57,26 @@ function isCompact(index: number): boolean {
   )
 }
 
+// ---------- Thread ----------
+
+const thread = computed(() => props.box.thread)
+
+async function showThread(message: ChatMessage) {
+  try {
+    await openBoxThread(props.box.channelId, message)
+  } catch (e) {
+    toast.error(e instanceof Error ? e.message : 'Failed to load replies.')
+  }
+}
+
 // ---------- Pending sends (undo window) ----------
 
-const pendingHere = computed(() =>
-  state.pending.filter((p) => p.channelId === props.box.channelId && !p.threadParentId),
+/** Queued in the open view: conversation (no parent) or the thread's replies. */
+const pendingShown = computed(() =>
+  state.pending.filter(
+    (p) =>
+      p.channelId === props.box.channelId && p.threadParentId === thread.value?.parent.id,
+  ),
 )
 
 function secondsLeft(item: PendingSend): number {
@@ -56,7 +85,10 @@ function secondsLeft(item: PendingSend): number {
 
 function undo(item: PendingSend) {
   const restored = undoSend(item.id)
-  if (restored) draft.value = restored.content
+  if (!restored) return
+  const text = restored.draft ?? restored.content
+  if (restored.threadParentId) replyDraft.value = text
+  else draft.value = text
 }
 
 async function deliverNow(item: PendingSend) {
@@ -71,9 +103,13 @@ async function deliverNow(item: PendingSend) {
 
 const scroller = ref<HTMLElement | null>(null)
 
-// Box opened/expanded or new messages → show the latest.
+// Box opened/expanded, view switched or new messages → show the latest.
 watch(
-  () => [props.box.minimized, props.box.messages.length + pendingHere.value.length],
+  () => [
+    props.box.minimized,
+    thread.value?.parent.id,
+    props.box.messages.length + (thread.value?.replies.length ?? 0) + pendingShown.value.length,
+  ],
   async () => {
     await nextTick()
     const el = scroller.value
@@ -83,15 +119,31 @@ watch(
 )
 
 const draft = ref('')
+const replyDraft = ref('')
+
+/** The composer edits the reply draft while a thread is open. */
+const composerDraft = computed({
+  get: () => (thread.value ? replyDraft.value : draft.value),
+  set: (value: string) => {
+    if (thread.value) replyDraft.value = value
+    else draft.value = value
+  },
+})
+
+const composer = ref<HTMLElement | null>(null)
+const mention = reactive(useTextareaMentions(composer, composerDraft))
 
 function submit() {
-  const text = draft.value
+  const text = composerDraft.value
   if (!text.trim()) return
-  draft.value = ''
-  send(text, undefined, props.box.channelId) // queued — undo window starts
+  composerDraft.value = ''
+  // Queued — undo window starts.
+  if (thread.value) sendThreadReply(text, thread.value.parent.id, props.box.channelId)
+  else send(text, undefined, props.box.channelId)
 }
 
 function onKeydown(event: KeyboardEvent) {
+  if (mention.handleKey(event)) return
   if (event.key === 'Enter' && !event.shiftKey) {
     event.preventDefault()
     submit()
@@ -140,24 +192,69 @@ function openFull() {
 
     <template #default>
       <div v-if="!box.minimized" ref="scroller" class="chat-box-scroll">
-        <div v-if="box.loading" class="p-3 text-center">
-          <VibeSpinner size="sm" />
-        </div>
-        <div v-else-if="!box.messages.length" class="p-3 text-center text-body-secondary">
-          No messages yet. Say hi 👋
-        </div>
-        <!-- in-thread: no thread panel here — "Open in full chat" for replies -->
-        <MessageItem
-          v-for="(message, index) in box.messages"
-          :key="message.id"
-          :message="message"
-          :member="memberFor(message.user_id)"
-          :compact="isCompact(index)"
-          :mine="message.user_id === state.me?.id"
-          in-thread
-        />
+        <!-- Thread view: parent + replies -->
+        <template v-if="thread">
+          <div class="sticky-top d-flex align-items-center gap-2 px-2 py-1 bg-body border-bottom">
+            <VibeButton
+              variant="secondary"
+              outline
+              size="sm"
+              class="border-0"
+              title="Back to conversation"
+              @click="closeBoxThread(box.channelId)"
+            >
+              <VibeIcon icon="arrow-left" class="me-1" />Back
+            </VibeButton>
+            <span class="fw-semibold small">Thread</span>
+          </div>
+          <MessageItem
+            :message="thread.parent"
+            :member="memberFor(thread.parent.user_id)"
+            :compact="false"
+            :mine="thread.parent.user_id === state.me?.id"
+            in-thread
+          />
+          <div class="thread-divider text-body-secondary mx-3">
+            {{ thread.replies.length }}
+            {{ thread.replies.length === 1 ? 'reply' : 'replies' }}
+          </div>
+          <div v-if="thread.loading" class="p-3 text-center">
+            <VibeSpinner size="sm" />
+          </div>
+          <div v-else-if="!thread.replies.length" class="p-3 text-center text-body-secondary">
+            No replies yet.
+          </div>
+          <MessageItem
+            v-for="(reply, index) in thread.replies"
+            :key="reply.id"
+            :message="reply"
+            :member="memberFor(reply.user_id)"
+            :compact="isCompact(thread.replies, index)"
+            :mine="reply.user_id === state.me?.id"
+            in-thread
+          />
+        </template>
 
-        <div v-for="item in pendingHere" :key="item.id" class="pending-row">
+        <!-- Conversation view -->
+        <template v-else>
+          <div v-if="box.loading" class="p-3 text-center">
+            <VibeSpinner size="sm" />
+          </div>
+          <div v-else-if="!box.messages.length" class="p-3 text-center text-body-secondary">
+            No messages yet. Say hi 👋
+          </div>
+          <MessageItem
+            v-for="(message, index) in box.messages"
+            :key="message.id"
+            :message="message"
+            :member="memberFor(message.user_id)"
+            :compact="isCompact(box.messages, index)"
+            :mine="message.user_id === state.me?.id"
+            @open-thread="showThread"
+          />
+        </template>
+
+        <div v-for="item in pendingShown" :key="item.id" class="pending-row">
           <!-- eslint-disable-next-line vue/no-v-html — own content, sanitized -->
           <div class="pending-content" v-html="markdownToSafeHtml(item.content)"></div>
           <div class="pending-controls">
@@ -177,18 +274,26 @@ function openFull() {
     </template>
 
     <template #footer>
-      <div class="d-flex align-items-end gap-2" @keydown="onKeydown">
+      <div
+        ref="composer"
+        class="position-relative d-flex align-items-end gap-2"
+        @keydown="onKeydown"
+        @input="mention.track"
+        @click="mention.track"
+        @keyup="mention.track"
+      >
+        <MentionMenu :matches="mention.matches" :active="mention.active" @pick="mention.pick" />
         <VibeFormTextarea
-          v-model="draft"
+          v-model="composerDraft"
           class="flex-grow-1 mb-0"
           :rows="2"
           no-resize
-          :placeholder="`Message ${title}… (Enter to send)`"
+          :placeholder="thread ? 'Reply… (Enter to send)' : `Message ${title}… (Enter to send)`"
         />
         <VibeButton
           variant="primary"
-          :disabled="!draft.trim()"
-          title="Send (Enter) — 60s undo window"
+          :disabled="!composerDraft.trim()"
+          :title="thread ? 'Reply (Enter) — 60s undo window' : 'Send (Enter) — 60s undo window'"
           @click="submit"
         >
           <VibeIcon icon="send-fill" />

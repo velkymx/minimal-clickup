@@ -11,6 +11,7 @@ import { useChat } from '../composables/useChat'
 import { useLightbox } from '../composables/useLightbox'
 import { emojiFor, QUICK_REACTIONS } from '../lib/emoji'
 import { markdownToSafeHtml } from '../lib/markdown'
+import { mentionsUser } from '../lib/mentions'
 import type { ChatMessage, Member } from '../types'
 
 const props = defineProps<{
@@ -21,11 +22,14 @@ const props = defineProps<{
   mine: boolean
   /** Arrived after the channel was last read — gets the unread accent. */
   unseen?: boolean
-  /** Rendered inside the thread panel — hides the reply affordances. */
+  /** Rendered inside a thread — hides the reply affordances. */
   inThread?: boolean
 }>()
 
-const { state, toggleReaction, openThread } = useChat()
+/** The host (chat page or docked box) decides where the thread opens. */
+const emit = defineEmits<{ 'open-thread': [message: ChatMessage] }>()
+
+const { state, toggleReaction } = useChat()
 const { openLightbox } = useLightbox()
 const toast = useToast()
 
@@ -50,8 +54,10 @@ const time = computed(() =>
 const fullDate = computed(() => new Date(props.message.date).toLocaleString())
 
 const renderedContent = computed(() =>
-  markdownToSafeHtml(props.message.content ?? ''),
+  markdownToSafeHtml(props.message.content ?? '', state.me?.id),
 )
+
+const mentionsMe = computed(() => mentionsUser(props.message.content, state.me?.id))
 
 // Attachment-only messages (images/GIFs/files uploaded in the official app)
 // arrive with empty content — the public API doesn't expose attachments.
@@ -104,7 +110,7 @@ async function copyMessage() {
 </script>
 
 <template>
-  <div class="message-row" :class="{ compact, unseen }">
+  <div class="message-row" :class="{ compact, unseen, 'bg-warning-subtle': mentionsMe }">
     <template v-if="!compact">
       <img
         v-if="member.profilePicture"
@@ -154,7 +160,7 @@ async function copyMessage() {
           type="button"
           class="reaction-chip replies-chip"
           title="Open thread"
-          @click="openThread(message)"
+          @click="emit('open-thread', message)"
         >
           <VibeIcon icon="chat-text" class="me-1" />{{ message.replies_count }}
           {{ message.replies_count === 1 ? 'reply' : 'replies' }}
@@ -177,7 +183,7 @@ async function copyMessage() {
           outline
           size="sm"
           title="Reply in thread"
-          @click="openThread(message)"
+          @click="emit('open-thread', message)"
         >
           <VibeIcon icon="chat-text" />
         </VibeButton>

@@ -1,7 +1,15 @@
 import { computed, reactive, readonly } from 'vue'
 import * as api from '../lib/clickup'
+import { linkMentions } from '../lib/mentions'
 import { clearCache, readCache, writeCache } from '../lib/taskCache'
-import type { ChatBox, ChatChannel, ChatMessage, Member, PendingSend } from '../types'
+import type {
+  ChatBox,
+  ChatChannel,
+  ChatMessage,
+  ChatThread,
+  Member,
+  PendingSend,
+} from '../types'
 
 const STORAGE_KEY = 'clickupchat.session'
 const SOUND_KEY = 'clickupchat.sound'
@@ -66,10 +74,8 @@ const state = reactive({
    * and stays put until you switch channels (Discord behavior).
    */
   dividerAt: 0,
-  /** Parent message of the open thread panel (null = closed). */
-  threadParent: null as ChatMessage | null,
-  threadReplies: [] as ChatMessage[],
-  loadingThread: false,
+  /** Thread open in the chat page's side panel (null = closed). */
+  thread: null as ChatThread | null,
   /** Locally queued messages inside their 60s undo window. */
   pending: [] as PendingSend[],
   /** 1s clock driving the pending countdowns. */
@@ -408,6 +414,11 @@ async function pollBox(channelId: string) {
     if (hasForeignNew) beep()
     markChannelRead(channelId, Date.now())
   }
+  const thread = box.thread
+  if (thread) {
+    refreshParent(thread, fresh)
+    await loadReplies(thread)
+  }
 }
 
 /** Open (or expand) a docked box. Opening past the cap drops the oldest. */
@@ -417,7 +428,7 @@ async function openBox(channelId: string) {
     expandBox(existing)
     return
   }
-  state.boxes.push({ channelId, minimized: false, messages: [], loading: true })
+  state.boxes.push({ channelId, minimized: false, messages: [], loading: true, thread: null })
   if (state.boxes.length > MAX_BOXES) state.boxes.shift()
   const box = state.boxes.find((b) => b.channelId === channelId)
   try {
@@ -493,6 +504,7 @@ async function pollMessages() {
     if (!m.reactions?.length) m.reactions = prevReactions.get(m.id) ?? m.reactions
   }
   state.messages = fresh
+  if (state.thread) refreshParent(state.thread, fresh)
   if (hasForeignNew && known.size > 0) beep()
 
   if (document.hidden) {
@@ -505,29 +517,56 @@ async function pollMessages() {
   }
 }
 
-async function pollThread() {
-  const parent = state.threadParent
-  if (!parent) return
-  const replies = await api.getReplies(state.workspaceId, parent.id)
-  if (state.threadParent?.id !== parent.id) return // thread changed mid-flight
+/**
+ * Refresh a thread's replies in place. A thread closed mid-flight is no longer
+ * rendered, so writing to it is harmless.
+ */
+async function loadReplies(thread: ChatThread) {
+  const replies = await api.getReplies(state.workspaceId, thread.parent.id)
   replies.reverse() // oldest → newest, like the main pane
-  const prevReactions = new Map(
-    state.threadReplies.map((m) => [m.id, m.reactions] as const),
-  )
+  // List responses omit reactions — carry over the lazily-fetched ones.
+  const prevReactions = new Map(thread.replies.map((m) => [m.id, m.reactions] as const))
   for (const m of replies) {
     if (!m.reactions?.length) m.reactions = prevReactions.get(m.id) ?? m.reactions
   }
-  state.threadReplies = replies
+  thread.replies = replies
+}
+
+/** Point the thread at the freshly polled copy of its parent (edits, reply count). */
+function refreshParent(thread: ChatThread, messages: ChatMessage[]) {
+  const fresh = messages.find((m) => m.id === thread.parent.id)
+  if (!fresh) return
+  if (!fresh.reactions?.length) fresh.reactions = thread.parent.reactions
+  thread.parent = fresh
+}
+
+async function pollThread() {
+  if (state.thread) await loadReplies(state.thread)
+}
+
+/** First load of a just-opened thread: replies, then their reactions. */
+async function loadThread(thread: ChatThread) {
+  try {
+    await loadReplies(thread)
+  } finally {
+    thread.loading = false
+  }
+  const recent = thread.replies.slice(-REACTION_REFRESH_COUNT)
+  inBatches(recent, 4, (m) => refreshReactionsFor(m.id)).catch(() => {})
 }
 
 /** Refresh a single message's reactions wherever it is rendered. */
 async function refreshReactionsFor(messageId: string) {
   const reactions = await api.getReactions(state.workspaceId, messageId)
-  for (const list of [state.messages, state.threadReplies, ...state.boxes.map((b) => b.messages)]) {
-    const message = list.find((m) => m.id === messageId)
-    if (message) message.reactions = reactions
+  const threads = [state.thread, ...state.boxes.map((b) => b.thread)]
+  const rendered = [
+    ...state.messages,
+    ...state.boxes.flatMap((b) => b.messages),
+    ...threads.flatMap((t) => (t ? [t.parent, ...t.replies] : [])),
+  ]
+  for (const message of rendered) {
+    if (message.id === messageId) message.reactions = reactions
   }
-  if (state.threadParent?.id === messageId) state.threadParent.reactions = reactions
 }
 
 /** Refresh reactions for the newest messages in the open channel. */
@@ -663,6 +702,7 @@ export function useChat() {
     state.unread = {}
     state.pending = []
     state.boxes = []
+    state.thread = null
     refreshBadges()
   }
 
@@ -690,15 +730,19 @@ export function useChat() {
     state.messages = []
   }
 
-  /** Queue a message; it sends after the undo window elapses. */
-  function send(content: string, html?: string, channelId = state.activeChannelId) {
+  /**
+   * Queue a message; it sends after the undo window elapses. Typed
+   * `@Full Name` becomes ClickUp mention markup. `draft` is the raw composer
+   * input, handed back on undo.
+   */
+  function send(content: string, draft?: string, channelId = state.activeChannelId) {
     const text = content.trim()
     if (!text || !channelId) return
     state.pending.push({
       id: crypto.randomUUID(),
       channelId,
-      content: text,
-      html,
+      content: linkMentions(text, state.members.values()),
+      draft: draft ?? content,
       sendAt: Date.now() + PENDING_DELAY_MS,
     })
   }
@@ -729,35 +773,57 @@ export function useChat() {
     await refreshReactionsFor(message.id)
   }
 
-  /** Open the reply thread panel for a message. */
+  /** Open the chat page's reply thread panel for a message. */
   async function openThread(message: ChatMessage) {
     // Callers pass the readonly proxy from `state` — store the raw reactive
     // object (or a mutable copy) so reaction refreshes can write to it.
-    state.threadParent =
-      state.messages.find((m) => m.id === message.id) ?? { ...message }
-    state.threadReplies = []
-    state.loadingThread = true
-    try {
-      await pollThread()
-    } finally {
-      state.loadingThread = false
+    state.thread = {
+      parent: state.messages.find((m) => m.id === message.id) ?? { ...message },
+      replies: [],
+      loading: true,
     }
+    await loadThread(state.thread) // read back: the reactive proxy, not the literal
   }
 
   function closeThread() {
-    state.threadParent = null
-    state.threadReplies = []
+    state.thread = null
   }
 
-  /** Queue a thread reply; same undo window as main messages. */
-  function sendThreadReply(content: string) {
+  /** Show a message's reply thread inside its docked box. */
+  async function openBoxThread(channelId: string, message: ChatMessage) {
+    const box = state.boxes.find((b) => b.channelId === channelId)
+    if (!box) return
+    box.thread = {
+      parent: box.messages.find((m) => m.id === message.id) ?? { ...message },
+      replies: [],
+      loading: true,
+    }
+    await loadThread(box.thread)
+  }
+
+  /** Back from a box's thread to its conversation. */
+  function closeBoxThread(channelId: string) {
+    const box = state.boxes.find((b) => b.channelId === channelId)
+    if (box) box.thread = null
+  }
+
+  /**
+   * Queue a thread reply; same undo window and mention linking as main
+   * messages. Defaults to the chat page's open thread.
+   */
+  function sendThreadReply(
+    content: string,
+    parentId = state.thread?.parent.id,
+    channelId = state.activeChannelId,
+  ) {
     const text = content.trim()
-    if (!text || !state.threadParent) return
+    if (!text || !parentId || !channelId) return
     state.pending.push({
       id: crypto.randomUUID(),
-      channelId: state.activeChannelId,
-      threadParentId: state.threadParent.id,
-      content: text,
+      channelId,
+      threadParentId: parentId,
+      content: linkMentions(text, state.members.values()),
+      draft: content,
       sendAt: Date.now() + PENDING_DELAY_MS,
     })
   }
@@ -830,6 +896,8 @@ export function useChat() {
     toggleReaction,
     openThread,
     closeThread,
+    openBoxThread,
+    closeBoxThread,
     sendThreadReply,
   }
 }

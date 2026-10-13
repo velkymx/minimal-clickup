@@ -297,14 +297,23 @@ export async function removeReaction(
   )
 }
 
+/** Every reply to a message, newest first. Pages at 100; walks `next_cursor`
+ *  (empty string on the last page). */
 export async function getReplies(
   workspaceId: string,
   messageId: string,
 ): Promise<ChatMessage[]> {
-  const res = await request<Paged<ChatMessage>>(
-    `/v3/workspaces/${workspaceId}/chat/messages/${messageId}/replies?limit=50`,
-  )
-  return pageData(res)
+  const replies: ChatMessage[] = []
+  let cursor = ''
+  do {
+    const res = await request<Paged<ChatMessage>>(
+      `/v3/workspaces/${workspaceId}/chat/messages/${messageId}/replies?limit=100` +
+        (cursor ? `&cursor=${encodeURIComponent(cursor)}` : ''),
+    )
+    replies.push(...pageData(res))
+    cursor = res.next_cursor ?? ''
+  } while (cursor)
+  return replies
 }
 
 export async function sendReply(

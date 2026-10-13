@@ -1,5 +1,6 @@
 import DOMPurify from 'dompurify'
 import { marked } from 'marked'
+import { mentionUserId } from './mentions'
 
 // Chat links should open outside the app.
 DOMPurify.addHook('afterSanitizeAttributes', (node) => {
@@ -21,8 +22,11 @@ const IMAGE_URL_RE = /\.(gif|png|jpe?g|webp)(\?[^\s]*)?$/i
  *   broken image.
  * - Because of that, this app sends images as plain LINKS; any link whose
  *   URL looks like an image is auto-embedded as an inline image here.
+ *
+ * Mention links (`[@Name](#user_mention#id)`) become mention pills; ones
+ * naming `meId` get the "you were mentioned" accent.
  */
-export function markdownToSafeHtml(markdown: string): string {
+export function markdownToSafeHtml(markdown: string, meId?: string): string {
   const cleaned = markdown.replace(
     /!\[([^\]]*)\]\(http:\/\/null\)/g,
     (_, alt: string) => `*📎 ${alt || 'attachment'} — view in ClickUp*`,
@@ -33,7 +37,16 @@ export function markdownToSafeHtml(markdown: string): string {
   const doc = new DOMParser().parseFromString(safe, 'text/html')
   for (const anchor of Array.from(doc.body.querySelectorAll('a'))) {
     const href = anchor.getAttribute('href') ?? ''
-    if (/^https?:\/\//i.test(href) && IMAGE_URL_RE.test(href)) {
+    const mentioned = mentionUserId(href)
+    if (mentioned) {
+      const pill = doc.createElement('span')
+      pill.className =
+        mentioned === meId
+          ? 'fw-semibold rounded px-1 text-warning-emphasis bg-warning-subtle'
+          : 'fw-semibold rounded px-1 text-primary-emphasis bg-primary-subtle'
+      pill.textContent = anchor.textContent
+      anchor.replaceWith(pill)
+    } else if (/^https?:\/\//i.test(href) && IMAGE_URL_RE.test(href)) {
       const img = doc.createElement('img')
       img.setAttribute('src', href)
       img.setAttribute('alt', anchor.textContent || 'image')
