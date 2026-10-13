@@ -62,8 +62,8 @@ export async function clearCache(): Promise<void> {
   }
 }
 
-// v3: rows gained statusType (stage is re-derived from it); older entries are ignored.
-export const listCacheKey = (workspaceId: string, userId: string) => `list:v3:${workspaceId}:${userId}`
+// v5: rows gained parentId (subtask nesting) plus the completed-tasks entry; older entries are ignored.
+export const listCacheKey = (workspaceId: string, userId: string) => `list:v5:${workspaceId}:${userId}`
 export const taskCacheKey = (taskId: string) => `task:${taskId}`
 
 /** "just now", "4m ago", "2h ago", "3d ago". */

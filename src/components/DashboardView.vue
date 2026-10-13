@@ -96,11 +96,16 @@ const focusItems = computed<ListGroupItem[]>(() =>
 
 // ---------- Sprint ----------
 
+/** Sprint progress counts work handed off: in review, approved or closed. */
+const SPRINT_DONE: Stage[] = ['review', 'approved', 'done']
+
 const sprintInfo = computed(() => {
   const s = sprint.value
   if (!s) return null
-  const mine = rows.value.filter((r) => r.lists.includes(s.name))
-  const done = mine.filter((r) => !isOpen(r)).length
+  // Open list + recently completed (closed tasks only come from the latter).
+  const byId = new Map([...(tasks.completed as TaskRow[]), ...rows.value].map((r) => [r.id, r]))
+  const mine = [...byId.values()].filter((r) => r.lists.includes(s.name))
+  const done = mine.filter((r) => SPRINT_DONE.includes(r.stage)).length
   const totalDays = Math.round((s.end - s.start) / DAY_MS) + 1
   const dayNumber = Math.round((startOfToday(now.value) - s.start) / DAY_MS) + 1
   const dateFmt = (ms: number) => new Date(ms).toLocaleDateString(undefined, { month: 'short', day: 'numeric' })
@@ -110,8 +115,12 @@ const sprintInfo = computed(() => {
     dayNumber,
     totalDays,
     daysLeft: totalDays - dayNumber,
-    mine: [...mine].sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage] || a.priorityRank - b.priorityRank),
+    mine,
     done,
+    /** Listed in the box: still to do (review/approved/closed only count). */
+    remaining: mine
+      .filter((r) => !SPRINT_DONE.includes(r.stage))
+      .sort((a, b) => STAGE_ORDER[a.stage] - STAGE_ORDER[b.stage] || a.priorityRank - b.priorityRank),
   }
 })
 
@@ -119,7 +128,7 @@ const STAGE_ORDER = Object.fromEntries(STAGES.map((s, i) => [s.key, i])) as Reco
 const STAGE_LABEL = Object.fromEntries(STAGES.map((s) => [s.key, s.label])) as Record<Stage, string>
 
 const sprintItems = computed<ListGroupItem[]>(() =>
-  (sprintInfo.value?.mine ?? []).map((r) => ({ text: r.name, to: `/tasks/${r.id}` })),
+  (sprintInfo.value?.remaining ?? []).map((r) => ({ text: r.name, to: `/tasks/${r.id}` })),
 )
 
 // ---------- Flow health ----------
@@ -276,7 +285,7 @@ const listItems = (list: readonly TaskRow[]): ListGroupItem[] =>
                     <div class="d-flex align-items-center gap-2">
                       <span class="flex-grow-1 text-truncate">{{ item.text }}</span>
                       <VibeBadge variant="secondary" subtle>
-                        {{ STAGE_LABEL[sprintInfo.mine[index]?.stage ?? 'backlog'] }}
+                        {{ STAGE_LABEL[sprintInfo.remaining[index]?.stage ?? 'backlog'] }}
                       </VibeBadge>
                     </div>
                   </template>

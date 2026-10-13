@@ -184,20 +184,38 @@ export function toMember(user: WorkspaceUser): Member {
 
 // ---------- v2: Tasks ----------
 
-/** Every open task (subtasks included) assigned to `userId`. The endpoint
+/** Open workspace tasks (subtasks included) matching `filter`. The endpoint
  *  pages at 100 tasks; walk pages until `last_page`. */
-export async function getAssignedTasks(
-  workspaceId: string,
-  userId: string,
-): Promise<ClickUpTask[]> {
+async function getTeamTasks(workspaceId: string, filter: string): Promise<ClickUpTask[]> {
   const tasks: ClickUpTask[] = []
   for (let page = 0; ; page++) {
     const res = await request<{ tasks: ClickUpTask[]; last_page?: boolean }>(
-      `/v2/team/${workspaceId}/task?assignees[]=${userId}&subtasks=true&page=${page}`,
+      `/v2/team/${workspaceId}/task?${filter}&subtasks=true&page=${page}`,
     )
     tasks.push(...res.tasks)
     if (res.last_page || !res.tasks.length) return tasks
   }
+}
+
+/** Every open task (subtasks included) assigned to `userId`. */
+export function getAssignedTasks(workspaceId: string, userId: string): Promise<ClickUpTask[]> {
+  return getTeamTasks(workspaceId, `assignees[]=${userId}`)
+}
+
+/** Tasks assigned to `userId` completed after `since` (epoch ms), closed
+ *  ones included — the open-only list above never returns those. */
+export function getCompletedTasks(
+  workspaceId: string,
+  userId: string,
+  since: number,
+): Promise<ClickUpTask[]> {
+  return getTeamTasks(workspaceId, `assignees[]=${userId}&include_closed=true&date_done_gt=${since}`)
+}
+
+/** Every open task (subtasks included) in the given lists — used to find
+ *  subtasks of my tasks that are assigned to other people. */
+export function getListTasks(workspaceId: string, listIds: string[]): Promise<ClickUpTask[]> {
+  return getTeamTasks(workspaceId, listIds.map((id) => `list_ids[]=${id}`).join('&'))
 }
 
 export async function getTask(taskId: string): Promise<ClickUpTaskDetail> {

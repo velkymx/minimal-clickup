@@ -51,8 +51,8 @@ const columns: DataTableColumn<TaskRow>[] = [
   { key: 'taskId', label: 'ID', class: 'text-nowrap' },
   { key: 'name', label: 'Task' },
   { key: 'status', label: 'Status' },
-  // Sorts by rank (urgent first); the cell slot shows the label.
-  { key: 'priorityRank', label: 'Priority', searchable: false },
+  // Sorts by rank (urgent first); the cell slot shows the label, search matches it.
+  { key: 'priorityRank', label: 'Priority', searchValue: (row) => row.priority },
   { key: 'list', label: 'List' },
   { key: 'due', label: 'Due', searchable: false, formatter: formatDate },
   { key: 'updated', label: 'Updated', searchable: false, formatter: formatDate },
@@ -123,6 +123,39 @@ function matches(row: TaskRow, except?: FacetKey): boolean {
 }
 
 const filteredRows = computed(() => rows.value.filter((row) => matches(row)))
+
+/** Subtasks of my tasks that are assigned to someone else. */
+const othersIds = computed(() => new Set(tasks.subtasks.map((r) => r.id)))
+
+/**
+ * Filters pick the top-level rows; a shown task always carries ALL of its
+ * subtasks (mine or not, matching the filters or not) as expandable sub-rows.
+ * A task of mine is top-level unless one of its ancestors is shown; others'
+ * subtasks only ever appear nested.
+ */
+const tableRows = computed(() => {
+  const shownIds = new Set(filteredRows.value.map((r) => r.id))
+  const byId = new Map<string, TaskRow>(
+    [...rows.value, ...(tasks.subtasks as TaskRow[])].map((r) => [r.id, r]),
+  )
+  const childrenOf = new Map<string, TaskRow[]>()
+  for (const row of byId.values()) {
+    if (row.parentId && byId.has(row.parentId)) {
+      childrenOf.set(row.parentId, [...(childrenOf.get(row.parentId) ?? []), row])
+    }
+  }
+  const nestsUnderShown = (row: TaskRow) => {
+    for (let id = row.parentId; id; id = byId.get(id)?.parentId ?? null) {
+      if (shownIds.has(id)) return true
+    }
+    return false
+  }
+  const withChildren = (row: TaskRow): TaskRow => {
+    const children = childrenOf.get(row.id)
+    return children ? { ...row, children: children.map(withChildren) } : row
+  }
+  return filteredRows.value.filter((row) => !nestsUnderShown(row)).map(withChildren)
+})
 
 /** Dropdown items per facet. Counts respect the OTHER facets' selections,
  *  so they always say how many rows picking that option would show. */
@@ -213,7 +246,7 @@ const overdueCount = computed(() => filteredRows.value.filter(isOverdue).length)
       </VibeButton>
     </header>
 
-    <div class="tasks-body">
+    <div class="tasks-body pb-5">
       <VibeAlert v-if="error" variant="danger" :message="`Couldn't load tasks: ${error}`" />
 
       <div v-if="loading && !rows.length" class="p-5 text-center">
@@ -249,39 +282,65 @@ const overdueCount = computed(() => filteredRows.value.filter(isOverdue).length)
       <VibeDataTable
         v-if="rows.length || !loading"
         :columns="columns"
-        :items="filteredRows"
+        :items="tableRows"
         row-key="id"
         sort-by="priorityRank"
+        multi-sort
+        expandable
+        :expandable-row="(item: TaskRow) => !!item.children?.length"
+        show-column-toggle
+        clickable
         :per-page="25"
         :per-page-options="[25, 50, 100, 200]"
         search-placeholder="Search tasks…"
         :empty-text="hasFilters ? 'No tasks match these filters.' : 'No tasks assigned to you.'"
         striped
         hover
-        small
         @row-clicked="(item: TaskRow) => router.push(`/tasks/${item.id}`)"
       >
-        <template #cell(name)="{ item }">
-          <VibeLink :to="`/tasks/${item.id}`" @click.stop>{{ item.name }}</VibeLink>
+        <!-- VibeUI 1.3 types cell(...) slot props as a union with footer(...)'s
+             { column } — `'item' in cell` narrows to the row case. -->
+        <template #cell(name)="cell">
+          <template v-if="'item' in cell">
+            <VibeIcon
+              v-if="cell.item.parentId"
+              icon="arrow-return-right"
+              class="me-1 text-body-secondary"
+              title="Subtask"
+            />
+            <VibeLink :to="`/tasks/${cell.item.id}`" @click.stop>{{ cell.item.name }}</VibeLink>
+            <VibeBadge v-if="cell.item.children?.length" variant="secondary" pill class="ms-1">
+              {{ cell.item.children.length }}
+            </VibeBadge>
+            <VibeIcon
+              v-if="othersIds.has(cell.item.id)"
+              icon="person-dash"
+              class="ms-1 text-body-secondary"
+              title="Not assigned to you"
+            />
+          </template>
         </template>
-        <template #cell(status)="{ item }">
+        <template #cell(status)="cell">
           <VibeBadge
+            v-if="'item' in cell"
             class="status-badge"
             text-color="white"
-            :style="{ '--status-color': item.statusColor }"
+            :style="{ '--status-color': cell.item.statusColor }"
           >
-            {{ item.status }}
+            {{ cell.item.status }}
           </VibeBadge>
         </template>
-        <template #cell(priorityRank)="{ item }">
-          <VibeBadge v-if="item.priority" :variant="PRIORITY_VARIANT[item.priority]">
-            {{ item.priority }}
-          </VibeBadge>
-          <span v-else class="text-body-secondary">—</span>
+        <template #cell(priorityRank)="cell">
+          <template v-if="'item' in cell">
+            <VibeBadge v-if="cell.item.priority" :variant="PRIORITY_VARIANT[cell.item.priority]">
+              {{ cell.item.priority }}
+            </VibeBadge>
+            <span v-else class="text-body-secondary">—</span>
+          </template>
         </template>
-        <template #cell(due)="{ item }">
-          <span :class="{ 'text-danger fw-semibold': isOverdue(item) }">
-            {{ formatDate(item.due) }}
+        <template #cell(due)="cell">
+          <span v-if="'item' in cell" :class="{ 'text-danger fw-semibold': isOverdue(cell.item) }">
+            {{ formatDate(cell.item.due) }}
           </span>
         </template>
       </VibeDataTable>

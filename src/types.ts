@@ -118,6 +118,8 @@ export interface ClickUpTask {
   list: { id: string; name: string }
   /** Extra lists the task lives in (multi-list membership, e.g. a sprint). */
   locations: Array<{ id: string; name: string }>
+  /** Parent task id when this is a subtask. */
+  parent: string | null
 }
 
 export interface TaskUser {
@@ -171,7 +173,6 @@ export interface ClickUpTaskDetail extends ClickUpTask {
   assignees: TaskUser[]
   watchers: TaskUser[]
   tags: Array<{ name: string; tag_bg: string; tag_fg: string }>
-  parent: string | null
   checklists: TaskChecklist[]
   custom_fields: TaskCustomField[]
   /** `task_id` waits on `depends_on`. */
@@ -219,6 +220,10 @@ export type TaskRow = {
   list: string
   /** Home list + extra locations — used to find sprint membership. */
   lists: string[]
+  /** Parent task id for subtasks (null on top-level tasks). */
+  parentId: string | null
+  /** UI-only: subtasks nested under this row in the tasks table. */
+  children?: TaskRow[]
 }
 
 export type Stage =
