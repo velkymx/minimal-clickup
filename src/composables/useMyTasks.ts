@@ -47,6 +47,7 @@ function toRow(task: ClickUpTask): TaskRow {
     list: task.list.name,
     lists: [task.list.name, ...task.locations.map((l) => l.name)],
     parentId: task.parent ?? null,
+    estimate: task.time_estimate ?? null,
   }
 }
 

@@ -18,6 +18,7 @@ import { useRoute } from 'vue-router'
 import { getCommentReplies, getTask, getTaskComments } from '../lib/clickup'
 import { markdownToSafeHtml } from '../lib/markdown'
 import { ageLabel, readCache, taskCacheKey, writeCache } from '../lib/taskCache'
+import { formatDuration } from '../lib/workflow'
 import type {
   ClickUpTaskDetail,
   TaskComment,
@@ -213,14 +214,6 @@ function formatDate(ms: string | number | null | undefined, withTime = false): s
   if (!ms) return '—'
   const d = new Date(Number(ms))
   return withTime ? d.toLocaleString() : d.toLocaleDateString()
-}
-
-function formatDuration(ms: number | null | undefined): string {
-  if (!ms) return '—'
-  const totalMin = Math.round(ms / 60_000)
-  const h = Math.floor(totalMin / 60)
-  const m = totalMin % 60
-  return [h && `${h}h`, m && `${m}m`].filter(Boolean).join(' ') || '0m'
 }
 
 function formatSize(bytes?: number): string {

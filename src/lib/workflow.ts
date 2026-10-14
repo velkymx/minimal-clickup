@@ -58,6 +58,15 @@ export function startOfToday(now = Date.now()): number {
   return d.getTime()
 }
 
+/** "2h 30m" from a duration in ms; "—" when unset. */
+export function formatDuration(ms: number | null | undefined): string {
+  if (!ms) return '—'
+  const totalMin = Math.round(ms / 60_000)
+  const h = Math.floor(totalMin / 60)
+  const m = totalMin % 60
+  return [h && `${h}h`, m && `${m}m`].filter(Boolean).join(' ') || '0m'
+}
+
 /** Whole days from today's midnight to `ms` (negative = in the past). */
 export function daysFromToday(ms: number, now = Date.now()): number {
   return Math.floor((ms - startOfToday(now)) / DAY_MS)

@@ -16,7 +16,7 @@ import {
 import { useRoute, useRouter } from 'vue-router'
 import { PRIORITY_RANK, useMyTasks } from '../composables/useMyTasks'
 import { ageLabel } from '../lib/taskCache'
-import { isOverdue } from '../lib/workflow'
+import { formatDuration, isOverdue } from '../lib/workflow'
 import type { TaskRow } from '../types'
 
 const router = useRouter()
@@ -54,6 +54,13 @@ const columns: DataTableColumn<TaskRow>[] = [
   // Sorts by rank (urgent first); the cell slot shows the label, search matches it.
   { key: 'priorityRank', label: 'Priority', searchValue: (row) => row.priority },
   { key: 'list', label: 'List' },
+  {
+    key: 'estimate',
+    label: 'Estimate',
+    searchable: false,
+    align: 'end',
+    formatter: (_, row) => formatDuration(row.estimate),
+  },
   { key: 'due', label: 'Due', searchable: false, formatter: formatDate },
   { key: 'updated', label: 'Updated', searchable: false, formatter: formatDate },
 ]

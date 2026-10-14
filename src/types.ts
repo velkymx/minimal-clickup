@@ -120,6 +120,8 @@ export interface ClickUpTask {
   locations: Array<{ id: string; name: string }>
   /** Parent task id when this is a subtask. */
   parent: string | null
+  /** Time estimate in ms, or null. */
+  time_estimate: number | null
 }
 
 export interface TaskUser {
@@ -166,7 +168,6 @@ export interface ClickUpTaskDetail extends ClickUpTask {
   text_content?: string
   date_closed: string | null
   start_date: string | null
-  time_estimate: number | null
   time_spent: number | null
   points: number | null
   creator: TaskUser
@@ -222,6 +223,8 @@ export type TaskRow = {
   lists: string[]
   /** Parent task id for subtasks (null on top-level tasks). */
   parentId: string | null
+  /** Time estimate in ms, or null. */
+  estimate: number | null
   /** UI-only: subtasks nested under this row in the tasks table. */
   children?: TaskRow[]
 }
