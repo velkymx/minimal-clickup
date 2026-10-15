@@ -285,10 +285,11 @@ function openFull() {
         <MentionMenu :matches="mention.matches" :active="mention.active" @pick="mention.pick" />
         <VibeFormTextarea
           v-model="composerDraft"
-          class="flex-grow-1 mb-0"
+          no-wrapper
+          class="flex-grow-1"
           :rows="2"
           no-resize
-          :placeholder="thread ? 'Reply… (Enter to send)' : `Message ${title}… (Enter to send)`"
+          :placeholder="thread ? 'Reply…' : `Message ${title}…`"
         />
         <VibeButton
           variant="primary"

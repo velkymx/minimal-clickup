@@ -191,6 +191,7 @@ async function copyMessage() {
           class="reaction-picker"
           variant="secondary"
           size="sm"
+          direction="up"
           :items="pickerItems"
           @item-click="onPick"
         >
