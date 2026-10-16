@@ -151,7 +151,26 @@ function refreshBadges() {
   document.title = total ? `(${total > 99 ? '99+' : total}) ClickUp Chat` : 'ClickUp Chat'
 }
 
-function markChannelRead(channelId: string, upTo: number) {
+/**
+ * Newest SERVER timestamp we can prove the user has seen for this channel: the
+ * channel's `latest_comment_at` (which also covers thread replies) and the
+ * newest message currently rendered for it. Always server time — never the
+ * local clock — so read marks can't drift against message timestamps.
+ */
+function seenHighWater(channelId: string): number {
+  const channel = state.channels.find((c) => c.id === channelId)
+  let hw = channel?.latest_comment_at ?? 0
+  const pools: ChatMessage[][] = []
+  if (channelId === state.activeChannelId) pools.push(state.messages)
+  const box = state.boxes.find((b) => b.channelId === channelId)
+  if (box) pools.push(box.messages)
+  for (const pool of pools) {
+    for (const m of pool) if (m.date > hw) hw = m.date
+  }
+  return hw
+}
+
+function markChannelRead(channelId: string, upTo = seenHighWater(channelId)) {
   if (!channelId || !upTo) return
   if ((lastRead[channelId] ?? 0) >= upTo && !state.unread[channelId]) return
   lastRead[channelId] = Math.max(lastRead[channelId] ?? 0, upTo)
@@ -187,7 +206,7 @@ function isViewing(channelId: string): boolean {
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) return
   for (const channel of state.channels) {
-    if (isViewing(channel.id)) markChannelRead(channel.id, Date.now())
+    if (isViewing(channel.id)) markChannelRead(channel.id)
   }
 })
 
@@ -342,11 +361,23 @@ async function fetchUnreadCount(channel: ChatChannel) {
   const count = countUnread(channel.id, messages)
   if (count) {
     state.unread[channel.id] = count
+    return
+  }
+  // No new top-level messages from others, yet latest_comment_at moved past
+  // the read mark. Two causes, told apart by the newest message we can see:
+  const latest = channel.latest_comment_at ?? 0
+  const newestOwn = messages.reduce(
+    (max, m) => (m.user_id && m.user_id === state.me?.id && m.date > max ? m.date : max),
+    0,
+  )
+  if (newestOwn >= latest) {
+    // The latest channel activity is your OWN message (e.g. sent from the
+    // ClickUp app). Not unread — advance the read mark so it stops re-flagging.
+    markChannelRead(channel.id, Math.max(latest, newestOwn))
+    delete state.unread[channel.id]
   } else {
-    // latest_comment_at moved but no new top-level messages: the activity
-    // is thread replies (they bump the timestamp without appearing in the
-    // main list). Still unread — show the dot. Own activity never lands
-    // here: sending/replying happens while viewing, which marks read.
+    // Activity is a thread reply (bumps the timestamp without appearing in the
+    // main list). Can't tell whose from the list — flag it to be safe.
     state.unread[channel.id] = UNREAD_UNKNOWN
   }
 }
@@ -412,7 +443,7 @@ async function pollBox(channelId: string) {
   // Hidden/minimized boxes chime through flagUnread instead.
   if (isViewing(channelId)) {
     if (hasForeignNew) beep()
-    markChannelRead(channelId, Date.now())
+    markChannelRead(channelId)
   }
   const thread = box.thread
   if (thread) {
@@ -442,7 +473,7 @@ async function openBox(channelId: string) {
 
 function expandBox(box: ChatBox) {
   box.minimized = false
-  if (isViewing(box.channelId)) markChannelRead(box.channelId, Date.now())
+  if (isViewing(box.channelId)) markChannelRead(box.channelId)
 }
 
 /**
@@ -513,7 +544,7 @@ async function pollMessages() {
     if (count) state.unread[channelId] = count
     refreshBadges()
   } else {
-    markChannelRead(channelId, Date.now())
+    markChannelRead(channelId)
   }
 }
 
