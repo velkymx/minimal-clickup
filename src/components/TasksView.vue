@@ -191,10 +191,19 @@ const facetOptions = computed(() => {
   return out
 })
 
-const dropdownItems = (facet: FacetKey): DropdownItem[] =>
-  facetOptions.value[facet].map((o) => ({ text: o.text, active: o.selected }))
+// Menus stay open across picks (auto-close="outside"), so each one ends with
+// a "Done" item that closes it.
+const dropdownItems = (facet: FacetKey): DropdownItem[] => [
+  ...facetOptions.value[facet].map((o) => ({ text: o.text, active: o.selected })),
+  { divider: true },
+  { text: 'Done' },
+]
 
 function toggleFilter(facet: FacetKey, index: number) {
+  if (index >= facetOptions.value[facet].length) {
+    dropdownRefs.value[facet]?.hide()
+    return
+  }
   const value = facetOptions.value[facet][index]?.value
   if (value === undefined) return
   const selected = filters.value[facet]
@@ -273,12 +282,18 @@ const overdueCount = computed(() => filteredRows.value.filter(isOverdue).length)
           @item-click="({ index }: { index: number }) => toggleFilter(facet.key, index)"
           @show="closeOtherDropdowns(facet.key)"
         >
-          <template #item="{ index }">
-            <span v-for="option in [facetOptions[facet.key][index]]" :key="option?.value" class="facet-option">
-              <VibeIcon :icon="option?.selected ? 'check-square-fill' : 'square'" />
-              <span class="flex-grow-1">{{ option?.text }}</span>
-              <span class="small" :class="{ 'text-body-secondary': !option?.selected }">{{ option?.count }}</span>
+          <template #item="{ item, index }">
+            <span v-if="index >= facetOptions[facet.key].length" class="facet-option">
+              <VibeIcon icon="x-lg" />
+              <span class="flex-grow-1">{{ item.text }}</span>
             </span>
+            <template v-else>
+              <span v-for="option in [facetOptions[facet.key][index]]" :key="option?.value" class="facet-option">
+                <VibeIcon :icon="option?.selected ? 'check-square-fill' : 'square'" />
+                <span class="flex-grow-1">{{ option?.text }}</span>
+                <span class="small" :class="{ 'text-body-secondary': !option?.selected }">{{ option?.count }}</span>
+              </span>
+            </template>
           </template>
         </VibeDropdown>
         <VibeButton v-if="hasFilters" variant="link" size="sm" @click="clearFilters()">
