@@ -232,10 +232,28 @@ const mainMention = reactive(
   }),
 )
 
+const composerPlaceholder = computed(() =>
+  activeChannel.value
+    ? `Message ${activeChannel.value.displayName || activeChannel.value.name}`
+    : 'Pick a channel first',
+)
+
+// Quill reads its placeholder once, at init, and renders it from the editor
+// root's data-placeholder attribute. The editor usually mounts before a channel
+// is active, so without this it keeps "Pick a channel first" (or the first
+// channel's name) forever. Re-applied on every `ready`: the editor
+// re-initializes at mobile breakpoints.
+function applyPlaceholder() {
+  if (quill) quill.root.dataset.placeholder = composerPlaceholder.value
+}
+
+watch(composerPlaceholder, applyPlaceholder)
+
 // VibeFormWysiwyg types its `ready` payload as unknown — it's the Quill instance.
 function onEditorReady(editor: unknown) {
   const instance = editor as Quill
   quill = instance
+  applyPlaceholder()
   // Fires on typing and caret moves: track the @query before the caret.
   instance.on('editor-change', () => {
     const selection = instance.getSelection()
@@ -336,7 +354,7 @@ function onKeydown(event: KeyboardEvent) {
         toolbar="full"
         mobile-toolbar="minimal"
         height="90px"
-        :placeholder="activeChannel ? `Message ${activeChannel.displayName || activeChannel.name}` : 'Pick a channel first'"
+        :placeholder="composerPlaceholder"
         :disabled="!activeChannel"
         @component-error="(err: { message: string }) => toast.error(err.message)"
         @ready="onEditorReady"
