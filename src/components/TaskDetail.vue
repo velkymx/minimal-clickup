@@ -11,6 +11,7 @@ import {
   VibeProgress,
   VibeRow,
   VibeSpinner,
+  useToast,
   type ListGroupItem,
   type Variant,
 } from '@velkymx/vibeui'
@@ -34,6 +35,7 @@ const PRIORITY_VARIANT: Record<string, Variant> = {
 }
 
 const route = useRoute()
+const toast = useToast()
 
 const task = ref<ClickUpTaskDetail | null>(null)
 const comments = ref<TaskComment[]>([])
@@ -139,10 +141,27 @@ watch(
 
 // ---------- Derived ----------
 
-const descriptionHtml = computed(() => {
-  const md = task.value?.markdown_description || task.value?.text_content || ''
-  return md.trim() ? markdownToSafeHtml(md) : ''
-})
+const descriptionMarkdown = computed(
+  () => (task.value?.markdown_description || task.value?.text_content || '').trim(),
+)
+
+const descriptionHtml = computed(() =>
+  descriptionMarkdown.value ? markdownToSafeHtml(descriptionMarkdown.value) : '',
+)
+
+/** "DEV-1231 Title", blank line, then the markdown description. */
+async function copyTitleAndBody() {
+  const t = task.value
+  if (!t) return
+  const title = `${t.custom_id ?? t.id} ${t.name}`
+  const text = descriptionMarkdown.value ? `${title}\n\n${descriptionMarkdown.value}` : title
+  try {
+    await navigator.clipboard.writeText(text)
+    toast.success('Title and description copied')
+  } catch {
+    toast.error('Copy failed — clipboard unavailable.')
+  }
+}
 
 const waitingOn = computed(() =>
   (task.value?.dependencies ?? [])
@@ -270,6 +289,17 @@ function isUrl(value: string): boolean {
       </VibeButton>
       <VibeBadge v-if="task?.custom_id" variant="secondary">{{ task.custom_id }}</VibeBadge>
       <h1 class="h5 mb-0 flex-grow-1 text-truncate">{{ task?.name ?? 'Task' }}</h1>
+      <VibeButton
+        v-if="task"
+        variant="secondary"
+        outline
+        size="sm"
+        class="text-nowrap"
+        title="Copy ID, title and description"
+        @click="copyTitleAndBody()"
+      >
+        <VibeIcon icon="clipboard" class="me-1" />Copy
+      </VibeButton>
       <span v-if="fetchedAt" class="small text-body-secondary text-nowrap">
         Cached {{ ageLabel(fetchedAt, now) }}
       </span>
